@@ -1,0 +1,47 @@
+name: PR preview
+
+# Each PR deploys to pr-preview/pr-<N>/ on gh-pages and gets a sticky comment
+# with the preview link. Set PAGES_BASE_URL to enable previews after configuring
+# the public Pages host.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# One group per PR (github.ref is refs/pull/N/merge for every event type above).
+concurrency: preview-${{ github.ref }}
+
+jobs:
+  preview:
+    # Same-repo branches only (Copilot's copilot/* branches qualify); fork PRs get a read-only token.
+    if: github.event.pull_request.head.repo.full_name == github.repository && vars.PAGES_DEPLOY_ENABLED == 'true' && vars.PAGES_BASE_URL != ''
+    runs-on: ubuntu-latest
+    env:
+      VITE_TRANSLATOR_URL: ${{ vars.TRANSLATOR_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: github.event.action != 'closed'
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        if: github.event.action != 'closed'
+        run: npm ci
+      - name: Stage the site
+        if: github.event.action != 'closed'
+        # Drop .nojekyll: the root one (pages.yml) covers the whole branch, and removing a
+        # preview leaves dotfiles behind, so the folder would outlive its PR.
+        run: npm run package && rm site/.nojekyll
+      - name: Deploy or remove the preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: site
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+          pages-base-url: ${{ vars.PAGES_BASE_URL }}
+          qr-code: "false"

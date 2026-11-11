@@ -1,0 +1,85 @@
+name: Pages
+
+# Set PAGES_DEPLOY_ENABLED to true only after the Pages visibility is approved.
+# main -> root of the gh-pages branch (GitHub Pages serves that branch at /).
+# PR previews live under pr-preview/pr-N/ on the same branch (see pr-preview.yml);
+# clean-exclude keeps them when main redeploys, and the weekly prune job removes
+# previews whose PR is no longer open (in case a PR's "closed" run failed).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1" # weekly prune of stale previews
+
+permissions:
+  contents: write
+
+# Separate from the preview groups on purpose: one shared group would cancel
+# pending PR deploys and leave stale previews.
+concurrency:
+  group: pages-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name != 'schedule' && vars.PAGES_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VITE_TRANSLATOR_URL: ${{ vars.TRANSLATOR_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Stage the site
+        run: npm run package
+      - name: Deploy main to gh-pages (keeps pr-preview/)
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: site
+          branch: gh-pages
+          clean: true
+          clean-exclude: |
+            pr-preview/
+          force: false
+          commit-message: "Deploy ${{ github.sha }} from main"
+
+  prune-previews:
+    if: github.event_name != 'push' && vars.PAGES_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    # pull-requests: read lets `gh pr view` see the PR; without it every lookup fails.
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+      - name: Remove previews whose PR is no longer open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          removed=0
+          for d in pr-preview/pr-*/; do
+            [ -d "$d" ] || continue
+            n="${d#pr-preview/pr-}"; n="${n%/}"
+            state="$(gh pr view "$n" --json state -q .state 2>/dev/null || echo UNKNOWN)"
+            # Only a confirmed closed/merged PR loses its preview; a failed lookup keeps it.
+            if [ "$state" = "CLOSED" ] || [ "$state" = "MERGED" ]; then
+              echo "removing $d (PR $n is $state)"
+              git rm -rq "$d"
+              removed=1
+            elif [ "$state" != "OPEN" ]; then
+              echo "::warning::keeping $d: could not read the state of PR $n ($state)"
+            fi
+          done
+          if [ "$removed" != 1 ]; then echo "nothing to prune"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Prune previews of closed PRs"
+          git push origin gh-pages

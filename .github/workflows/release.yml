@@ -1,0 +1,75 @@
+name: Release
+
+# Every PR cuts a release (CONTRIBUTING.md "Versioning and releases", enforced by the
+# `changelog-check` CI job): it bumps package.json and promotes `## [Unreleased]` to
+# `## [x.y.z] - YYYY-MM-DD`. When the merge lands on main this workflow tags it `vx.y.z` and
+# creates the GitHub Release with that changelog section as notes and the two shareable builds
+# attached (`npm run package`): one self-contained .html that opens from disk, and a .zip of
+# the staged site for hosting. A push that leaves the version alone does nothing.
+# `workflow_dispatch` cuts (or re-attempts) the release for the version main is at right now.
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VITE_TRANSLATOR_URL: ${{ vars.TRANSLATOR_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # HEAD^ is the previous main commit (squash merges only)
+      - name: Decide whether this push cut a release
+        id: version
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          previous=$(git show HEAD^:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" || echo "")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$MANUAL" != "true" ] && [ "$version" = "$previous" ]; then
+            echo "package.json version is still $version; nothing to release"; exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::warning::v$version is already tagged; nothing to release"; exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "Cutting v$version (previous main was ${previous:-unknown})"
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.release == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: steps.version.outputs.release == 'true'
+      - name: Check the changelog, build and package
+        if: steps.version.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          node bin/changelog.js check
+          node bin/changelog.js notes "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/notes.md"
+          npm run package
+      - name: Tag and create the GitHub Release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "v$VERSION" release/* \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          echo "::notice::Released v$VERSION: $(gh release view "v$VERSION" --json url --jq .url)"

@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: package.json version matches the top CHANGELOG.md release
+        run: node bin/changelog.js check
+      - name: Check TypeScript
+        run: npm run typecheck
+      - name: Build and package (the same assets release.yml attaches to a release)
+        run: npm run package
+      - run: npm test
+      - name: Sanity-check the build output
+        run: test -s site/index.html && ls -l release/
+      - name: Upload the packaged site as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: saos10-node-launchpad
+          path: release/
+          if-no-files-found: error
+
+  changelog:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify CHANGELOG.md was updated
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch origin "$BASE_REF" --depth=50
+          if git diff --name-only "origin/$BASE_REF"...HEAD | grep -qx 'CHANGELOG.md'; then
+            echo "CHANGELOG.md was updated in this PR -- OK."
+          else
+            echo "::error::This PR does not update CHANGELOG.md. Add an entry under [Unreleased] describing your change."
+            exit 1
+          fi
+      - name: The PR cuts a release (version bumped, top changelog release dated, [Unreleased] empty)
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: node bin/changelog.js release-check "origin/$BASE_REF"
+      - name: Put the changelog entry into the PR description
+        # The lines this PR adds to CHANGELOG.md become a "## Changelog" section of the PR body (between
+        # markers, replaced on every push), so the review and the merge read what the changelog says.
+        # Fork PRs get a read-only token: skipped, not failed.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          section="$(node bin/changelog.js pr-body "origin/$BASE_REF")"
+          if [ -z "$(printf '%s' "$section" | sed '1,2d' | tr -d '[:space:]')" ]; then echo "no changelog lines added -- PR body left alone"; exit 0; fi
+          body="$(gh pr view "$PR" --json body -q .body)"
+          begin='<!-- changelog:begin -->'; end='<!-- changelog:end -->'
+          block="$(printf '%s\n%s\n%s' "$begin" "$section" "$end")"
+          if printf '%s' "$body" | grep -q "$begin"; then
+            new="$(printf '%s' "$body" | awk -v blk="$block" -v b="$begin" -v e="$end" 'index($0,b){print blk; skip=1; next} index($0,e){skip=0; next} !skip{print}')"
+          else
+            new="$(printf '%s\n\n%s' "$body" "$block")"
+          fi
+          printf '%s' "$new" > /tmp/pr-body.md
+          gh pr edit "$PR" --body-file /tmp/pr-body.md
+          echo "PR #$PR description updated with the changelog entry."

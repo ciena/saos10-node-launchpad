@@ -1,0 +1,14 @@
+# Welcome to SAOS10 Node Launchpad
+
+Start with Initial Login, then review the Golden Config examples that apply to
+your environment. Use the builders to create configuration text, and review it
+before applying it to a node.
+
+The CLI Cheatsheet is searchable and supports browser-local notes. The SAOS
+Fundamentals guide explains the objects used by the configuration tools.
+
+This app does not connect to or configure a device. Examples are starting
+points; confirm platform support, values, and service impact before use.
+
+For corrections, use the public repository's issue tracker after removing
+customer data, credentials, private addresses, and other sensitive information.

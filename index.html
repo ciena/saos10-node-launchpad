@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SAOS10 Node Launchpad</title>
+    <link rel="icon" href="./src/assets/lightbulb.svg" type="image/svg+xml" />
+    <script>
+      // Apply the saved theme before the React application paints.
+      try {
+        const d = document.documentElement;
+        d.dataset.theme = localStorage.getItem('snl-theme') || localStorage.getItem('tbf-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
