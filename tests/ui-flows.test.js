@@ -8,7 +8,47 @@ import { defaults as ipDefaults } from '../src/generator/l3ip.js';
 import { defaults as l2Defaults } from '../src/generator/l2evc.js';
 import { CFM_EXTRA_DEFAULTS } from '../src/generator/cfm-options.js';
 import { runBrowserChecks } from './helpers/browser.js';
+import { marked } from 'marked';
 
+function sourceCommands(markdown) {
+  const commands = [];
+  const visit = tokens => {
+    for (const token of tokens) {
+      if (token.type === 'code' && token.lang !== 'text') {
+        commands.push(...token.text.split('\n').filter(line => line.trim() && !line.trimStart().startsWith('#')));
+      } else if (token.type === 'paragraph' || token.type === 'text') {
+        if (token.tokens?.[0]?.type === 'codespan' && !token.tokens[0].text.trimStart().startsWith('#')) {
+          commands.push(token.tokens[0].text);
+        }
+      } else if (token.type === 'list') {
+        token.items.forEach(item => visit(item.tokens));
+      }
+    }
+  };
+  visit(marked.lexer(markdown));
+  return commands;
+}
+test('Guide examples use host IP placeholders and preserve default routes and OSPF area IDs', () => {
+  for (const name of ['cheatsheet.md', 'terms-f0.md', 'golden-configs.md', 'initial-login.md', '_start-here.txt']) {
+    const text = readFileSync(new URL(`../content/${name}`, import.meta.url), 'utf8');
+    const hostAddresses = (text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || []).filter(ip => ip !== '0.0.0.0');
+    assert.deepEqual(hostAddresses, [], `${name} contains host IP examples`);
+  }
+  const cheatsheet = readFileSync(new URL('../content/cheatsheet.md', import.meta.url), 'utf8');
+  assert.match(cheatsheet, /contact your IT for assistance/);
+  assert.match(cheatsheet, /"XYZ#123" would be "XYZ%23123"/);
+  assert.match(cheatsheet, /<IP-ADDRESS>` - I think these are optional/);
+  assert.match(cheatsheet, /sftp:\/\/<USERNAME>:<PASSWORD>@<SFTP-SERVER>\/<PATH>\/<PACKAGE-FILE>/);
+  assert.match(cheatsheet, /scp <USERNAME>@<SFTP-SERVER-IP>:<REMOTE-LICENSE-PATH> <LOCAL-LICENSE-PATH>/);
+  assert.match(cheatsheet, /static-snooping-binding <MAC-ADDRESS> <IP-ADDRESS>/);
+  assert.doesNotMatch(cheatsheet, /default SAOS10 username|config password [^<]|login = cleartext [^<]|ServerTB1|SOAMSample|my\.ciena\.com/i);
+  assert.doesNotMatch(cheatsheet, /security-name (?:cienaSecurityV1|cienaSecurityV2c|ISP1-Public|"Trap-User1")/);
+  assert.match(cheatsheet, /priv des key <PRIVACY-KEY-HEX>/);
+  assert.match(cheatsheet, /ipv4 0\.0\.0\.0\/0/);
+  assert.match(cheatsheet, /areas area 0\.0\.0\.0/);
+  assert.doesNotMatch(cheatsheet, /Windstream IT|Win#123|Win%23123|I think these are option\b/);
+  assert.match(cheatsheet, /-- Pro Tip: If modifying a MTU sizes along an ISIS span/);
+});
 const browser = process.env.CHROME_BIN || ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
 for (const width of [390, 768, 1440]) {
 test(`Offline React flows, saved drafts and visualizations at ${width}px`, { skip: !browser }, async () => {
@@ -621,13 +661,15 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             return section && Math.abs(section.getBoundingClientRect().top) < 150;
           }, 'MTU Details did not scroll to its section');
           const mtuSection = document.getElementById('mtu-sizes');
-          expect([...document.querySelectorAll('.field-note-heading h2')].filter(h => h.textContent.endsWith('- MTU Sizes')).length === 1,
+          expect([...document.querySelectorAll('.field-note-heading h3')].filter(h => h.textContent.endsWith('- MTU Sizes')).length === 1,
             'Duplicate MTU Sizes section remains');
-          const mtuRows = [...mtuSection.querySelectorAll('tbody tr')].map(row => [...row.cells].map(cell => cell.textContent).join(':'));
+          const mtuRows = [...mtuSection.querySelectorAll('tbody tr')].map(row =>
+            [...row.cells].map(cell => cell.textContent.trim()).join(':'));
           expect(JSON.stringify(mtuRows) === JSON.stringify(['5170:9660', '5171:9660', '8140:9600', '8180:9312',
             '8190:9600', '8192:9600', 'vRouter-BNG:1990', 'ALL others:9700']), 'MTU platform chart differs from requested values');
           nativeInput(document.querySelector('[aria-label="Search commands and notes"]'), '5170'); await tick();
-          expect(document.getElementById('mtu-sizes')?.querySelector('table'), 'Platform chart cannot be found by search');
+          expect(document.getElementById('mtu-sizes')?.querySelector('table')?.textContent.includes('5170'),
+            'Platform chart cannot be found by search');
           await navigate('l2evc');
           expect(document.getElementById('l2-l2-mtu').value === '9500', 'MTU value not preserved after Details navigation');
           document.getElementById('l2-emitMtu').click(); await tick();
@@ -832,6 +874,12 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             expect(notes.length > 0, 'Hash-prefixed guide notes missing');
             for (const note of notes) {
               expect(note.textContent.trimStart().startsWith('#') && !note.matches('code'), 'Entire guide comment is still code');
+              const sectionBlock = note.closest('.guide-section-block');
+              if (sectionBlock) {
+                expect(getComputedStyle(note).fontFamily === getComputedStyle(sectionBlock).fontFamily,
+                  'Section comment is not monospace');
+                continue;
+              }
               for (const example of note.querySelectorAll('code')) {
                 expect(getComputedStyle(example).fontFamily === getComputedStyle(document.querySelector('code')).fontFamily,
                   'Embedded comment example is not fixed-width');
@@ -847,12 +895,27 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             expect([...document.querySelectorAll('.prose .command-list code, .prose code.cmd')].every(code =>
               !code.textContent.trimStart().startsWith('#')), 'Hash-prefixed guide line remains fixed-width');
           };
+          const checkSectionBlocks = expectedCommands => {
+            const rendered = [...document.querySelectorAll('.field-note-section .guide-section-block > code.cmd')]
+              .map(node => node.textContent).filter(line => line.trim());
+            const decodeEntities = text => {
+              const node = document.createElement('textarea'); node.innerHTML = text; return node.value;
+            };
+            expect(JSON.stringify(rendered) === JSON.stringify(expectedCommands.map(decodeEntities)),
+              'Section formatting changed executable commands');
+            for (const note of document.querySelectorAll('.guide-section-block .guide-comment')) {
+              expect(note.textContent.split('\\n').every(line => !line.trim() || line.trimStart().startsWith('# ')),
+                'Description line is not a safe CLI comment');
+            }
+          };
           checkGuideComments();
           expect(document.querySelector('.guide-comment code.inline-example')?.textContent === 'mgmtbr0',
             'Initial Login comment example is not marked as code');
           expect(document.querySelector('.prose .cli code'), 'Guide CLI blocks missing');
           expect(!document.querySelector('.prose pre') && document.querySelector('.prose ul.command-list li code'),
             'Initial Login still embeds code boxes instead of command bullets');
+          expect([...document.querySelectorAll('.prose .command-list > li')].every(item =>
+            getComputedStyle(item).listStyleType === 'none'), 'Initial Login command retains a bullet');
           const loginSections = [...document.querySelectorAll('.prose details.login-section')];
           expect(loginSections.length > 4 && loginSections.every(node => !node.open), 'Initial Login sections are not all collapsed by default');
           const loginHeadingsWithoutCopy = [
@@ -895,6 +958,7 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           expect(fillInPanel.open && document.querySelector('.prose').textContent.includes('browser-value'),
             'Editing a placeholder did not update commands or keep Fill-in values expanded');
           await navigate('golden');
+          checkSectionBlocks(${JSON.stringify(sourceCommands(readFileSync(new URL('../content/golden-configs.md', import.meta.url), 'utf8')))});
           checkGuideComments();
           expect(document.querySelector('.page-heading .lead').textContent.startsWith('Ciena Solution Architect recommended baseline configurations'),
             'Golden Config introduction has not been updated');
@@ -906,9 +970,9 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             const descriptions = [...document.querySelectorAll('.guide-section-description')];
             expect(descriptions.length > 5, 'Long section details were not moved below their titles');
             for (const description of descriptions) {
-              expect(description.tagName === 'P' && getComputedStyle(description).fontFamily === getComputedStyle(description.closest('.prose')).fontFamily
-                && getComputedStyle(description).fontWeight === getComputedStyle(description.closest('.prose')).fontWeight,
-                'Long section details are not normal-font body text');
+              expect(description.closest('.guide-section-block') ? description.textContent.startsWith('# ')
+                : description.tagName === 'P' && !description.textContent.startsWith('# '),
+              'Long section details do not match the section presentation');
               expect(description.closest('.field-note-section').querySelector('.field-note-heading').compareDocumentPosition(description)
                 & Node.DOCUMENT_POSITION_FOLLOWING, 'Section details are not below the title');
             }
@@ -944,8 +1008,19 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             'Build panel introduction not consolidated');
           const include = title => [...document.querySelectorAll('input[type="checkbox"]')].find(input => input.getAttribute('aria-label') === 'Include ' + title);
           const goldenSections = [...document.querySelectorAll('.field-note-heading h2')];
-          expect(!document.querySelector('.prose pre') && document.querySelector('.prose ul.command-list li code'),
-            'Golden Configs still embeds code boxes instead of command bullets');
+          expect([...document.querySelectorAll('.field-note-section')].every(section =>
+            section.querySelectorAll('.guide-section-block').length <= 1 && !section.querySelector('.command-list')),
+          'Golden Config section has multiple code blocks');
+          const navigationGuidance = includeTitle => [...document.querySelectorAll('input[type="checkbox"]')]
+            .find(input => input.getAttribute('aria-label') === 'Include ' + includeTitle)
+            .closest('.field-note-section');
+          const modeGuidance = navigationGuidance('Going into "config" mode and exiting');
+          expect(!modeGuidance.querySelector('pre') && modeGuidance.querySelector('.prose p')?.textContent.startsWith('Select this'),
+            'Description-only Golden Config is still a commented code block');
+          const manualBlock = document.querySelector('[aria-label="Include Timing - Manual"]').closest('.field-note-section')
+            .querySelector('.guide-section-block');
+          expect(manualBlock.textContent.includes('system set clock ' + manualDate + '\\n# ^^^ exit out of config')
+            && manualBlock.textContent.startsWith('# If NTP is not available'), 'Manual clock descriptions are not safe comments');
           expect(!document.querySelector('.prose button.copy')
             && document.querySelectorAll('.field-note-heading button svg').length === goldenSections.length,
             'Golden configs still have per-block copy controls or missing icons');
@@ -971,7 +1046,8 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           include('Going into "config" mode and exiting').click(); await tick();
           const offloadTitle = '3926/3928 Offload Port Preparation';
           const offloadSection = document.querySelector('[aria-label="Include ' + offloadTitle + '"]').closest('.field-note-section');
-          expect(offloadSection.querySelector('.guide-section-description').textContent.startsWith('For 3926 and 3928'),
+          expect(offloadSection.querySelector('.guide-section-description').textContent.startsWith('For 3926 and 3928')
+            && !offloadSection.querySelector('pre'),
             'Original offload heading details were lost');
           include(offloadTitle).click(); await tick();
           let capturedBlob;
@@ -1008,6 +1084,17 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             'Config mode selected alone should remain a commented example');
           [...document.querySelectorAll('button')].find(button => button.textContent === 'Clear selection').click(); await tick();
           include('Timing - NTP').click(); await tick();
+          include('System Hostname').click(); await tick();
+          include('Timing - Manual').click(); await tick();
+          expect(include('Timing - Manual').checked && !include('Timing - NTP').checked && include('System Hostname').checked,
+            'Manual timing did not exclusively replace NTP while preserving unrelated selections');
+          expect(document.querySelector('.panel details pre').textContent.includes('system ntp admin-state disabled')
+            && !document.querySelector('.panel details pre').textContent.includes('system ntp admin-state enabled'),
+          'Manual timing selection still downloads NTP configuration');
+          include('Timing - NTP').click(); await tick();
+          expect(include('Timing - NTP').checked && !include('Timing - Manual').checked
+            && !document.querySelector('.panel details pre').textContent.includes('system ntp admin-state disabled'),
+          'NTP timing did not exclusively replace Manual');
           const ntpSection = document.querySelector('[aria-label="Include Timing - NTP"]').closest('.field-note-section');
           const manualTimingSection = document.querySelector('[aria-label="Include Timing - Manual"]').closest('.field-note-section');
           expect(ntpSection.textContent.includes('system ntp admin-state enabled')
@@ -1057,10 +1144,41 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             && !document.querySelector('.prose').textContent.includes('Key SAOS Terms'),
           'Workbook glossary remains on the Fundamentals page');
           await navigate('cheatsheet');
-          checkGuideComments();
+          expect(document.getElementById('everyday-show-commands')?.querySelector('pre').textContent.includes('ping ip dest <IP-ADDRESS>')
+            && document.querySelector('#view').textContent.includes('I think these are optional')
+            && document.querySelector('#view').textContent.includes('"XYZ#123" would be "XYZ%23123"')
+            && document.querySelector('#view').textContent.includes('contact your IT for assistance'),
+          'Cheatsheet placeholder or generalized guidance is missing');
           {
-            const zabbix = [...document.querySelectorAll('.field-note-section')].find(section =>
-              section.textContent.includes('Zabbix Template: Ciena SAOS 10 by SNMP'));
+            const expectedCommands = ${JSON.stringify(sourceCommands(readFileSync(new URL('../content/cheatsheet.md', import.meta.url), 'utf8')))};
+            const decodeEntities = text => {
+              const node = document.createElement('textarea'); node.innerHTML = text; return node.value;
+            };
+            const rendered = [...document.querySelectorAll('.cheatsheet-group .cli:not(.cli-output) pre > code, .cheatsheet-group .cs-cmd > code.cmd')]
+              .flatMap(node => node.textContent.split('\\n')).filter(line => line.trim() && !line.trimStart().startsWith('#'));
+            const expected = expectedCommands.map(decodeEntities);
+            const differs = expected.findIndex((command, index) => command !== rendered[index]);
+            expect(rendered.length === expected.length && differs < 0, 'Cheatsheet layout changed executable commands at #' + differs
+              + ': expected ' + JSON.stringify(expected[differs]) + ', rendered ' + JSON.stringify(rendered[differs])
+              + ' (' + rendered.length + ' of ' + expected.length + ')');
+          }
+          const cheatSections = [...document.querySelectorAll('.cheatsheet-group .field-note-section')];
+          expect(cheatSections.length > 40
+            && !document.querySelector('.cheatsheet-group .guide-section-block, .cheatsheet-group .command-list, .cheatsheet-group .guide-comment'),
+          'Cheatsheet still uses commented section blocks');
+          for (const line of [...document.querySelectorAll('.cheatsheet-group .cli:not(.cli-output) pre > code')].flatMap(node => node.textContent.split('\\n'))) {
+            expect(!line.trimStart().startsWith('#') && !line.includes('^^'), 'Comment embedded in a cheatsheet code block: ' + line);
+          }
+          expect(![...document.querySelectorAll('.cheatsheet-prose > p, .cheatsheet-prose li, .cs-note')].some(node =>
+            /^\\s*(?:#\\s|\\^\\^)/.test(node.textContent)), 'A cheatsheet description still reads as a CLI comment');
+          const groupTitles = [...document.querySelectorAll('.cheatsheet-group-title')].map(node => node.firstChild.textContent);
+          expect(groupTitles.join('|') === 'Start here|Software and licensing|Config backup and restore|Management access|Ports and optics|MTU|IP and routing|L2 services and OAM|QoS|SNMP and monitoring',
+            'Cheatsheet topic groups differ: ' + groupTitles.join('|'));
+          expect([...document.querySelectorAll('.cheatsheet-group')].every(group => group.querySelector(':scope > h2.cheatsheet-group-title')
+            && group.querySelector('.field-note-heading h3') && !group.querySelector('.field-note-heading h2')),
+          'Topic groups and their sections do not use h2 and h3 headings');
+          {
+            const zabbix = cheatSections.find(section => section.textContent.includes('Zabbix Template: Ciena SAOS 10 by SNMP'));
             expect(zabbix?.textContent.includes('SNMPv2c or SNMPv3 polling')
               && zabbix.textContent.includes('Zabbix 7.0') && zabbix.textContent.includes('Zabbix 7.4')
               && zabbix.querySelector('a[href*="community-templates/pull/880"]')
@@ -1069,54 +1187,113 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             'SAOS10 Zabbix template guide is incomplete');
             expect(!document.querySelector('[id^="saos10-software-upgrade-using-pc-sftp-client"]'),
               'Shell-dependent PC SFTP upgrade remains');
-            const allowedShellSections = ['if-tac-requests-a-state-dump', 'manual-node-specific-license-sequence'];
+            const allowedShellSections = ['state-dump-for-tac', 'manual-node-specific-license'];
             expect(!document.getElementById('enable-saos10-device-for-statedump-sftp-download')
-              && ![...document.querySelectorAll('.field-note-heading h2')].some(node => node.textContent.endsWith('Configuration Output Formats')),
+              && ![...document.querySelectorAll('.field-note-heading h3')].some(node => node.textContent.endsWith('Configuration Output Formats')),
               'Archived statedump SFTP or output-format section remains');
-            expect(allowedShellSections.every(id => document.getElementById(id)),
-              'One or more approved shell-command sections are missing');
+            for (const section of cheatSections) {
+              if (/diag shell/i.test(section.textContent))
+                expect(allowedShellSections.includes(section.id), 'Unapproved diag shell tip remains: ' + section.id);
+            }
+            for (const id of allowedShellSections) expect(document.getElementById(id), 'Retained shell exception missing: ' + id);
+            expect(!document.getElementById('saos10-port-packet-capture-haldebug-mirror-tcpdump-procedure-2026-0826')
+              && !['command-list-quick', 'notes-on-haldebug-mirror', 'notes-on-tcpdump', 'additional-tcpdump-samples',
+                'finding-the-pcap-file-for-transfer'].some(id => document.getElementById(id)),
+            'Shell-dependent packet capture section remains');
           }
           expect(!document.querySelector('.page-heading').textContent.includes('Workbook commands'),
             'Removed cheatsheet wording remains');
-          checkConciseTitles();
           expect(!document.querySelector('.placeholder-panel'), 'CLI field notes still shows fill-in values');
-          expect(!document.querySelector('.field-note-section pre'), 'CLI field notes still embeds code boxes');
-          expect([...document.querySelectorAll('.field-note-section .prose li')].filter(item => !item.querySelector('code')).every(item =>
-            getComputedStyle(item).listStyleType === 'none'), 'Prose-only line still has a bullet');
-          const basics = document.querySelector('[id^="the-basics"]');
-          expect(basics && !basics.querySelector('pre') && basics.querySelectorAll('li code.cmd').length >= 15,
-            'Basics is not a bulleted fixed-width command section');
-          for (const section of document.querySelectorAll('.field-note-section')) {
-            expect(section.querySelectorAll('button[aria-label^="Copy "]').length === 1
-              && !section.querySelector('button.copy'), 'Section has per-line or duplicate copy buttons');
-            expect(section.querySelector('.field-note-heading button svg'), 'Field-note Copy icon missing');
+          const numbered = [...document.querySelectorAll('.cheatsheet-group .field-note-heading h3')].map(node => node.textContent);
+          expect(numbered.length === cheatSections.length && numbered.every((text, index) => text.startsWith('#' + (index + 1) + ' - ')),
+            'Built-in section numbers are not sequential');
+          for (const title of numbered) {
+            expect(title.replace(/^#\\d+ - /, '').trim().split(/\\s+/).length <= 7, 'Cheatsheet section heading exceeds seven words: ' + title);
           }
+          expect(!document.querySelector('.cheatsheet-group .guide-section-description'), 'Cheatsheet still splits long headings into a title and a description');
+          const basics = document.getElementById('the-basics');
+          const basicRows = [...basics.querySelectorAll('.cmd-table > .cs-row')];
+          expect(basicRows.length >= 15 && basicRows.every(row => row.querySelector(':scope > .cs-cmd > code.cmd')
+            && row.querySelectorAll(':scope > button.copy[aria-label="Copy command"]').length === 1),
+          'Basics commands are not command rows with one copy control each');
+          const rowFor = command => basicRows.find(row => row.querySelector('code.cmd').textContent === command);
+          const licenseRow = rowFor('show license');
+          expect(licenseRow?.querySelector(':scope > .cs-note')?.textContent.startsWith('MUST HAVE ACTIVE LICENSE')
+            && licenseRow.querySelector('.cs-cmd').textContent === 'show license',
+          'Command and description are not separate cells');
+          expect(rowFor('show software') && !rowFor('show software').querySelector('.cs-note'), 'Command without a description has an empty description cell');
+          {
+            const commandBox = licenseRow.querySelector('.cs-cmd').getBoundingClientRect();
+            const noteBox = licenseRow.querySelector('.cs-note').getBoundingClientRect();
+            expect(innerWidth > 600 ? noteBox.left >= commandBox.right - 1 && Math.abs(noteBox.top - commandBox.top) < 8
+              : noteBox.top >= commandBox.bottom - 1 && Math.abs(noteBox.left - commandBox.left) < 2,
+            'Description is not beside its command on wide screens or below it on narrow screens');
+            expect(getComputedStyle(licenseRow.querySelector('code.cmd')).fontFamily !== getComputedStyle(licenseRow.querySelector('.cs-note')).fontFamily
+              && getComputedStyle(licenseRow.querySelector('.cs-note')).fontFamily === getComputedStyle(basics.querySelector('.prose')).fontFamily,
+            'Command is not fixed-width or its description is not ordinary text');
+            expect(basics.scrollWidth <= basics.clientWidth + 1, 'Basics section overflows horizontally');
+          }
+          const ringSection = document.getElementById('g-8032-erp');
+          expect(ringSection?.querySelector('.cheatsheet-prose > ul > li')?.textContent.includes('Logical Ring')
+            && ringSection.querySelectorAll('.cmd-table > .cs-row').length === 2,
+          'Ordinary bullets and command rows in one list were not separated');
+          const mtuTable = document.getElementById('mtu-sizes')?.querySelector('table');
+          expect(mtuTable?.querySelectorAll('tbody tr').length === 8 && document.getElementById('mtu-sizes').querySelectorAll('.cs-row').length >= 7,
+            'MTU Sizes lost its platform table or command rows');
+          const logs = document.getElementById('logs-and-debug');
+          expect(logs?.querySelector('.cli.cli-output pre')?.textContent.includes('igmp-querier')
+            && !logs.querySelector('.cli-output button') && logs.querySelector('.cs-row code.cmd').textContent === 'log view cli-log',
+          'Device output is not shown as a separate output block without a copy control');
           const routing = document.getElementById('popular-routing-commands');
-          expect(routing && /^#\\d+ - Popular Routing Commands$/.test(routing.querySelector('.field-note-heading h2').textContent),
-            'Nested routing header is not an independent section');
-          const routingTitle = routing.querySelector('h2').textContent;
-          const vlanClassification = [...document.querySelectorAll('.field-note-section')].find(section =>
-            section.querySelector('.field-note-heading h2').textContent.endsWith('VLAN and QinQ Classification'));
-          expect(vlanClassification, 'VLAN/QinQ guidance is not its own summarized section');
-          expect(vlanClassification.id === 'advanced-details-about-vlan-and-qinq-classifying-aka-assigning-a-port-39-s-vlan-s-to-a-flow-point-fp-and-attaching-it-to-the-forwarding-domain-fd',
-            'VLAN/QinQ section does not retain its source-heading anchor');
-          expect(vlanClassification.querySelector('.guide-section-description').textContent.startsWith('Advanced Details about VLAN and QinQ Classifying'),
-            'Full VLAN/QinQ section title was not retained below its summary');
-          expect(vlanClassification.textContent.includes('CVID bundling is achieved')
+          expect(routing && /^#\\d+ - Popular Routing Commands$/.test(routing.querySelector('.field-note-heading h3').textContent),
+            'Popular Routing Commands section or its anchor is missing');
+          const routingTitle = routing.querySelector('h3').textContent;
+          const vlanClassification = document.getElementById('vlan-and-qinq-classification');
+          expect(vlanClassification && !vlanClassification.querySelector('pre, .cs-row')
+            && !vlanClassification.querySelector('.field-note-heading button')
+            && vlanClassification.textContent.includes('CVID bundling is achieved')
             && vlanClassification.textContent.includes('VLAN-tagged classifiers are categorized'),
-            'VLAN/QinQ guidance content is not grouped into its section');
-          expect(!document.getElementById('saos10-port-packet-capture-haldebug-mirror-tcpdump-procedure-2026-0826'),
-            'Shell-dependent packet capture section remains');
-          expect(!['command-list-quick', 'notes-on-haldebug-mirror', 'notes-on-tcpdump', 'additional-tcpdump-samples',
-            'finding-the-pcap-file-for-transfer', 'transfer-opt-1-upload-the-pcap-file-to-your-scp-server',
-            'transfer-opt-2-download-the-pcap-file-from-your-pc-scp-client-e-g-winscp']
-            .some(id => document.getElementById(id)), 'Packet capture subheaders still create separate sections');
-          const numbered = [...document.querySelectorAll('.field-note-heading h2')].map(node => node.textContent).filter(text => /^#\\d+/.test(text));
-          expect(numbered.every((text, index) => text.startsWith('#' + (index + 1) + ' -')), 'Built-in section numbers are not sequential');
-          expect(document.querySelector('[id^="if-tac-requests-a-state-dump"]'), 'Upgrade subheading was not split into its own section');
+          'Prose-only VLAN/QinQ section is incomplete or offers a command copy');
+          for (const section of cheatSections) {
+            const hasCommands = Boolean(section.querySelector('.cli:not(.cli-output) pre > code, .cs-cmd > code.cmd'));
+            const headerButtons = section.querySelectorAll('.field-note-heading button');
+            expect(headerButtons.length === (hasCommands ? 1 : 0)
+              && (!hasCommands || (headerButtons[0].textContent.trim() === 'Copy commands' && headerButtons[0].querySelector('svg'))),
+            'Section header copy control does not match its commands: ' + section.id);
+            expect([...section.querySelectorAll('.cli:not(.cli-output)')].every(block => block.querySelectorAll('button.copy').length === 1),
+              'Code block does not have exactly one copy control: ' + section.id);
+          }
           const heading = routing.querySelector('.field-note-heading');
-          expect(heading.querySelector('button').getBoundingClientRect().left >= heading.querySelector('h2').getBoundingClientRect().right,
+          expect(heading.querySelector('button').getBoundingClientRect().left >= heading.querySelector('h3').getBoundingClientRect().right,
             'Copy button is not to the right of the header');
+          expect(document.querySelectorAll('.cheatsheet-toc .toc-group-title').length === groupTitles.length
+            && document.querySelectorAll('.cheatsheet-toc .toc-group a:not(.toc-group-title)').length === cheatSections.length,
+          'Sidebar is not grouped by topic');
+          {
+            const topicButton = id => document.querySelector('[aria-label="Topic"] [data-mode="' + id + '"]');
+            const search = document.querySelector('[aria-label="Search commands and notes"]');
+            const mtuTitle = document.getElementById('mtu-sizes').querySelector('h3').textContent;
+            topicButton('mtu').click(); await tick();
+            expect(topicButton('mtu').getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.cheatsheet-group').length === 1
+              && document.querySelectorAll('.cheatsheet-group .field-note-section').length === 4
+              && !document.getElementById('the-basics') && !document.getElementById('my-entries')
+              && document.getElementById('mtu-sizes').querySelector('h3').textContent === mtuTitle,
+            'Topic filter did not narrow to the MTU group or renumbered it');
+            expect(document.querySelector('.cheatsheet-topics [role="status"]')?.textContent.startsWith('Showing 4 of ' + cheatSections.length),
+              'Filter result count is missing');
+            nativeInput(search, 'hello-padding'); await tick();
+            expect(document.querySelectorAll('.cheatsheet-group .field-note-section').length === 1
+              && document.getElementById('mtu-with-isis-and-mpls')?.querySelector('.cs-row code.cmd').textContent.includes('hello-padding false'),
+            'Search inside a topic did not find the matching command row');
+            nativeInput(search, 'zzz-no-such-command'); await tick();
+            expect(document.getElementById('view').textContent.includes('No matching commands or notes.'), 'Empty result message missing');
+            nativeInput(search, ''); await tick();
+            topicButton('my-entries').click(); await tick();
+            expect(!document.querySelector('.cheatsheet-group') && document.getElementById('my-entries'), 'My entries topic did not isolate personal entries');
+            topicButton('all').click(); await tick();
+            expect(document.querySelectorAll('.cheatsheet-group .field-note-section').length === cheatSections.length
+              && !document.querySelector('.cheatsheet-topics [role="status"]'), 'Clearing the topic filter did not restore every section');
+          }
           let copiedSection;
           const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
           const originalExecCommand = document.execCommand;
@@ -1126,33 +1303,29 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             return originalExecCommand.call(document, action);
           };
           try {
-            const downloadNote = [...document.querySelectorAll('.guide-comment')].find(note => note.textContent.includes('After starting the download'));
-            expect(downloadNote && [...downloadNote.querySelectorAll('code')].map(code => code.textContent).join('|') === 'show soft|log monitor troubleshoot',
-              'Cheatsheet command examples are not fixed-width within prose');
-            const noteSection = downloadNote.closest('.field-note-section');
-            const noteTitle = noteSection.querySelector('.field-note-heading h2').textContent;
-            noteSection.querySelector('.field-note-heading button').click(); await tick();
-            expect(copiedSection.startsWith(noteTitle) && copiedSection.includes(downloadNote.textContent)
-              && !copiedSection.includes('\u0060')
-              && !copiedSection.includes('\\nshow soft\\nlog monitor troubleshoot'),
-              'Copy omitted the section header/comment or duplicated embedded examples');
-            basics.querySelector('.field-note-heading button').click(); await tick();
-            expect(copiedSection.startsWith(basics.querySelector('.field-note-heading h2').textContent)
-              && copiedSection.includes('show software') && copiedSection.includes('Use the credentials supplied for your platform'),
-            'Section copy omitted its header, comments, or commands');
-            const savedBackup = document.getElementById('backup-compare-config-changes');
-            const fixedWidthLines = [...savedBackup.querySelectorAll('code.cmd')].filter(code =>
-              code.textContent === 'config backup filename <NAME>');
-            const commandFont = getComputedStyle(document.querySelector('.field-note-section .command-list code')).fontFamily;
-            expect(fixedWidthLines.length === 1 && fixedWidthLines.every(code =>
-              getComputedStyle(code).fontFamily === commandFont),
-            'Retained backup command is missing or not fixed-width');
-            expect(![...document.querySelectorAll('.field-note-heading h2')]
-              .some(heading => heading.textContent.includes('Restore the Default Password')),
-            'Default password example remains in the Cheatsheet');
-            const bfd = [...document.querySelectorAll('.field-note-section')].find(section =>
-              section.querySelector('.field-note-heading h2').textContent.endsWith('Common IP-BFD Profiles'));
-            expect(bfd?.textContent.includes('bfd profiles ip-bfd-profile Profile-10ms'), 'IP-BFD profiles missing from the cheatsheet');
+            const live = id => document.getElementById(id);
+            [...live('the-basics').querySelectorAll('.cs-row')].find(row => row.querySelector('code.cmd').textContent === 'show license')
+              .querySelector('button.copy').click(); await tick();
+            expect(copiedSection === 'show license', 'Row copy did not return only its command: ' + JSON.stringify(copiedSection));
+            const pingBlock = [...live('everyday-show-commands').querySelectorAll('.cli')].find(block => block.textContent.includes('data-size 9100'));
+            pingBlock.querySelector('button.copy').click(); await tick();
+            expect(copiedSection === 'ping ip dest <IP-ADDRESS>\\nping ip dest <IP-ADDRESS> data-size 9100 source <IP-ADDRESS> repeat-count 100',
+              'Code block copy did not return its commands: ' + JSON.stringify(copiedSection));
+            live('the-basics').querySelector('.field-note-heading button').click(); await tick();
+            expect(copiedSection.startsWith('set session more off\\nshow license\\nshow software\\n')
+              && copiedSection.split('\\n').length === live('the-basics').querySelectorAll('.cs-row').length
+              && !copiedSection.includes('Default SAOS10 Username') && !copiedSection.includes('MUST HAVE') && !copiedSection.includes('#'),
+            'Copy commands included descriptions or lost commands: ' + JSON.stringify(copiedSection));
+            expect(live('initial-authentication')?.textContent.includes('unique password')
+              && !live('initial-authentication').querySelector('.field-note-heading button'),
+            'Initial authentication guidance should not include default credentials or copyable commands');
+            const oneLiner = live('exit-free-one-liner-configs').querySelector('table td:last-child code.cmd');
+            oneLiner.click(); await tick();
+            expect(copiedSection === 'license-management-config license-server-config <IP> backup false' && oneLiner.title === 'Click to copy',
+              'Clicking a command in a table did not copy it: ' + JSON.stringify(copiedSection));
+            expect(live('back-up-compare-and-restore').querySelectorAll('.cs-row').length === 7
+              && !live('back-up-compare-and-restore').textContent.includes('diag shell'), 'Backup, compare and restore commands are not merged into one section');
+            expect(live('static-route-ecmp-and-bfd')?.textContent.includes('bfd profiles ip-bfd-profile Profile-10ms'), 'IP-BFD profiles missing from the cheatsheet');
             await navigate('login');
             expect(![...document.querySelectorAll('button')].some(button => button.textContent === 'Download .txt'),
               'Initial Login still has a download button');
@@ -1325,12 +1498,14 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           nativeInput(document.querySelector('.entry-form input'), 'Browser field note'); await tick();
           document.querySelector('.entry-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
           expect(document.getElementById('my-entries').textContent.includes('show browser-smoke'), 'Note not saved');
-          expect(document.querySelector('#my-entries .personal-command-list li code')
-            && !document.querySelector('#my-entries pre'), 'Personal entry still embeds a code box');
+          expect(document.querySelectorAll('#my-entries .cli pre').length === 1 && !document.querySelector('#my-entries .guide-section-block')
+            && document.querySelector('#my-entries pre').textContent === 'show browser-smoke'
+            && document.querySelector('#my-entries .cheatsheet-prose > p').textContent === 'Browser field note',
+          'Personal entry does not use one code block with its note as ordinary text');
           const firstNumber = JSON.parse(localStorage.getItem('snl-cheatsheet-user'))[0].number;
           expect(firstNumber === numbered.length + 1, 'Add entry did not assign the next section number');
           expect(document.getElementById('my-entries').querySelector('h2').textContent.includes('My entries'), 'Personal section group missing');
-          expect(document.querySelector('#my-entries .field-note-heading h2').textContent.startsWith('#' + firstNumber), 'Personal entry number missing');
+          expect(document.querySelector('#my-entries .field-note-heading h3').textContent.startsWith('#' + firstNumber), 'Personal entry number missing');
           const activity = JSON.parse(localStorage.getItem('snl-cheatsheet-changelog-v0.8.14'));
           expect(activity.length === 1 && activity[0].preview === 'show browser-smoke\\nBrowser field note', 'Entry activity snapshot missing');
           expect(!Number.isNaN(Date.parse(activity[0].timestamp)) && activity[0].timestamp.includes('T'), 'Activity timestamp is not full ISO date-time');
@@ -1366,7 +1541,7 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           nativeInput(search, 'browser-smoke'); await tick();
           expect(document.getElementById('my-entries').textContent.includes('show browser-smoke'), 'Note search failed');
           nativeInput(search, 'Popular Routing Commands'); await tick();
-          expect(document.getElementById('popular-routing-commands').querySelector('h2').textContent === routingTitle, 'Filtering renumbered a section');
+          expect(document.getElementById('popular-routing-commands').querySelector('h3').textContent === routingTitle, 'Filtering renumbered a section');
           nativeInput(search, 'zero-matches-unique'); await tick();
           expect(document.getElementById('my-entries').textContent.includes('No entries to show'), 'No-results state missing');
           await navigate(''); await navigate('cheatsheet');

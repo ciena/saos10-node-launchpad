@@ -56,10 +56,12 @@ jobs:
         if: steps.version.outputs.release == 'true'
       - name: Check the changelog, build and package
         if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           node bin/changelog.js check
-          node bin/changelog.js notes "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/notes.md"
+          node bin/changelog.js notes "$VERSION" > "$RUNNER_TEMP/notes.md"
           npm run package
       - name: Tag and create the GitHub Release
         if: steps.version.outputs.release == 'true'

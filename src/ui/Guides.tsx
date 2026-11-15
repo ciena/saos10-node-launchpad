@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CalendarClock, Copy, Download, Plus, Search, Trash2, Upload, X } from 'lucide-react';
-import { CodeBlock, InputField, PageHead, Panel } from './components';
+import { CodeBlock, InputField, PageHead, Panel, Segments } from './components';
 import { copyText, downloadFile, isRecord, notify, useStored, type Route } from './state';
 import releaseChangelog from '../../CHANGELOG.md?raw';
 import readme from '../../README.md?raw';
@@ -50,7 +50,7 @@ const parser = new Marked({
     },
   },
 });
-interface Section { id: string; title: string; html: string }
+interface Section { id: string; title: string; html: string; level?: 2 | 3 }
 function parseDocument(md: string, includeSubsections = false, conciseTitles = false) {
   const node = document.createElement('div');
   node.innerHTML = DOMPurify.sanitize(parser.parse(md, { async: false }));
@@ -84,7 +84,7 @@ function parseDocument(md: string, includeSubsections = false, conciseTitles = f
   for (const child of Array.from(node.children)) {
     if (child.tagName === 'H2' || (includeSubsections && child.tagName === 'H3')) {
       if (current.html) sections.push(current);
-      current = { id: child.id, title: child.textContent || '', html: '' };
+      current = { id: child.id, title: child.textContent || '', html: '', level: child.tagName === 'H2' ? 2 : 3 };
     }
     current.html += child.outerHTML;
   }
@@ -137,10 +137,161 @@ function commandBullets(node: HTMLElement) {
     if (!item.querySelector('code') || item.textContent?.trimStart().startsWith('#')) item.classList.add('prose-note');
   }
 }
+function sectionCodeHtml(html: string) {
+  const source = document.createElement('div');
+  source.innerHTML = html;
+  source.querySelectorAll('button.copy').forEach(button => button.remove());
+  if (source.firstElementChild?.matches('h2, h3')) source.firstElementChild.remove();
+  const lines: string[] = [];
+  const figures: string[] = [];
+  let hasCommands = false;
+  const comment = (html: string, pointsToCommand = false, className = '') => {
+    const probe = document.createElement('div');
+    probe.innerHTML = html;
+    if (!probe.textContent?.trim()) return;
+    const prefix = pointsToCommand ? '# ^^^ ' : '# ';
+    for (const line of html.replace(/<br\s*\/?>/gi, '\n').split('\n')) {
+      if (line.trim()) lines.push(`<span class="guide-comment ${className}">${prefix}${line.replace(/^\s*#\s*/, '')}</span>`);
+    }
+  };
+  const command = (html: string) => {
+    const probe = document.createElement('div');
+    probe.innerHTML = html;
+    if (probe.textContent?.trimStart().startsWith('#')) comment(html);
+    else {
+      if (probe.textContent?.trim()) hasCommands = true;
+      lines.push(`<code class="cmd">${html || ' '}</code>`);
+    }
+  };
+  const visit = (element: Element) => {
+    if (element.matches('.cli')) {
+      const block = element.querySelector('pre > code');
+      if (!block) return;
+      for (const line of block.innerHTML.split('\n')) {
+        if (element.hasAttribute('data-guidance')) comment(line);
+        else command(line);
+      }
+      return;
+    }
+    if (element.matches('ul, ol, li') && element.firstElementChild?.matches('li, p')) {
+      Array.from(element.children).forEach(visit);
+      return;
+    }
+    const first = element.firstChild;
+    if (first instanceof Element && first.matches('code.cmd')) {
+      if (first.textContent?.trimStart().startsWith('#')) { comment(element.innerHTML); return; }
+      command(first.innerHTML);
+      const remainder = element.cloneNode(true) as Element;
+      remainder.firstChild?.remove();
+      comment(remainder.innerHTML.replace(/^\s*(?:--?(?:>|&gt;)|-)\s*/, ''), true);
+      return;
+    }
+    if (element.matches('table')) {
+      for (const row of element.querySelectorAll('tr')) {
+        comment(escape(Array.from(row.querySelectorAll('th, td')).map(cell => cell.textContent?.trim() || '').join(' | ')));
+      }
+      return;
+    }
+    if (element.matches('figure')) {
+      figures.push(element.outerHTML);
+      for (const line of blockText(element as HTMLElement).split('\n')) comment(escape(line));
+      return;
+    }
+    comment(element.innerHTML, false, element.classList.contains('guide-section-description') ? 'guide-section-description' : '');
+  };
+  Array.from(source.children).forEach(element => {
+    visit(element);
+    lines.push('');
+  });
+  if (!hasCommands) {
+    for (const block of source.querySelectorAll('.cli')) {
+      const prose = document.createElement('div');
+      prose.innerHTML = (block.querySelector('pre > code')?.innerHTML || '').split('\n')
+        .filter(line => line.trim()).map(line => `<p>${line.replace(/^\s*#\s*/, '')}</p>`).join('');
+      block.replaceWith(...prose.childNodes);
+    }
+    for (const element of source.querySelectorAll('p, li')) {
+      const first = element.firstChild;
+      if (first instanceof Text) first.textContent = first.textContent?.replace(/^\s*#\s*/, '') || '';
+      else if (first instanceof Element && first.matches('code.cmd')) first.innerHTML = first.innerHTML.replace(/^\s*#\s*/, '');
+    }
+    return source.innerHTML;
+  }
+  return `<pre class="guide-section-block">${lines.join('\n').trimEnd()}</pre>${figures.join('')}`;
+}
 function sectionCommands(section: Element | null | undefined) {
+  const block = section?.querySelector('.guide-section-block');
+  if (block) return [block.textContent || ''];
   return Array.from(section?.querySelectorAll('.cli code, code.cmd, .guide-comment, .personal-command') || [])
     .filter(node => !node.parentElement?.closest('.guide-comment'))
     .map(node => node.textContent || '').filter(Boolean);
+}
+// CLI Cheatsheet: commands stay in code blocks or command rows, and descriptions stay ordinary prose.
+// A list item is a command row only when it starts with the command; a bullet that mentions one later stays prose.
+function startsWithCommand(item: Element) {
+  const body = item.querySelector(':scope > p') || item;
+  const first = Array.from(body.childNodes).find(node =>
+    !(node instanceof Text && !node.textContent?.trim()) && !(node instanceof Element && node.matches('button.copy')));
+  return first instanceof Element && first.matches('code.cmd');
+}
+function commandRow(item: Element) {
+  const body = item.querySelector(':scope > p') || item;
+  const button = item.querySelector(':scope > button.copy');
+  const command = body.querySelector(':scope > code.cmd');
+  const row = document.createElement('div');
+  row.className = 'cs-row';
+  const cell = document.createElement('div');
+  cell.className = 'cs-cmd';
+  const note = document.createElement('div');
+  note.className = 'cs-note';
+  button?.remove();
+  command?.remove();
+  note.innerHTML = body.innerHTML.replace(/^\s*(?:--?(?:>|&gt;)|-)\s*/, '').trim();
+  if (command) cell.append(command);
+  row.append(cell);
+  if (note.textContent?.trim()) row.append(note);
+  if (button) row.append(button);
+  return row;
+}
+function cheatsheetSectionHtml(html: string) {
+  const source = document.createElement('div');
+  source.innerHTML = html;
+  if (source.firstElementChild?.matches('h2, h3')) source.firstElementChild.remove();
+  for (const block of source.querySelectorAll('.cli[data-guidance]')) {
+    block.classList.add('cli-output');
+    block.querySelector('button.copy')?.remove();
+  }
+  for (const item of source.querySelectorAll('li.cmd-row')) {
+    if (item.parentElement?.matches('ul') && startsWithCommand(item)) continue;
+    item.classList.remove('cmd-row');
+    item.querySelector(':scope > button.copy')?.remove();
+  }
+  for (const list of Array.from(source.querySelectorAll('ul'))) {
+    if (!list.querySelector(':scope > li.cmd-row')) continue;
+    // A run of command items becomes a command table; ordinary bullets around it stay a list.
+    const parts: HTMLElement[] = [];
+    let rows: HTMLElement | null = null;
+    let bullets: HTMLElement | null = null;
+    for (const item of Array.from(list.children)) {
+      if (item.matches('li.cmd-row')) {
+        bullets = null;
+        if (!rows) { rows = document.createElement('div'); rows.className = 'cmd-table'; parts.push(rows); }
+        rows.append(commandRow(item));
+      } else {
+        rows = null;
+        if (!bullets) { bullets = document.createElement('ul'); parts.push(bullets); }
+        bullets.append(item);
+      }
+    }
+    list.replaceWith(...parts);
+  }
+  for (const button of source.querySelectorAll('button.copy')) button.innerHTML = `${copyIcon}<span>Copy</span>`;
+  for (const command of source.querySelectorAll(':not(pre) > code.cmd')) command.setAttribute('title', 'Click to copy');
+  return source.innerHTML;
+}
+function cheatsheetCommands(root: ParentNode | null | undefined) {
+  return Array.from(root?.querySelectorAll('.cli:not(.cli-output) pre > code, .cs-cmd > code.cmd') || [])
+    .map(node => (node.textContent || '').replace(/\s+$/, '')).filter(Boolean);
 }
 function collapsibleDocument(html: string) {
   const headingsWithoutCopy = new Set([
@@ -178,7 +329,7 @@ function collapsibleDocument(html: string) {
   return result.innerHTML;
 }
 
-function MarkdownBody({ html, values }: { html: string; values: Record<string, string> }) {
+function MarkdownBody({ html, values, className = '' }: { html: string; values: Record<string, string>; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.querySelectorAll<HTMLElement>('[data-ph]').forEach(node => {
@@ -186,7 +337,7 @@ function MarkdownBody({ html, values }: { html: string; values: Record<string, s
       node.textContent = values[key] || `<${key}>`;
     });
   }, [html, values]);
-  return <div className={`prose${html.includes('command-list') ? ' command-prose' : ''}`} ref={ref} dangerouslySetInnerHTML={{ __html: html }} onClick={e => {
+  return <div className={`prose${html.includes('command-list') ? ' command-prose' : ''}${className ? ` ${className}` : ''}`} ref={ref} dangerouslySetInnerHTML={{ __html: html }} onClick={e => {
     if (!(e.target instanceof Element)) return;
     const sectionButton = e.target.closest('button.section-copy');
     if (sectionButton) {
@@ -199,9 +350,14 @@ function MarkdownBody({ html, values }: { html: string; values: Record<string, s
     }
     const button = e.target.closest('button.copy');
     if (button) {
-      const text = button.closest('.cli')?.querySelector('code')?.textContent || button.closest('.cmd-row')?.querySelector('code.cmd')?.textContent;
-      if (text) void copyText(text);
+      const text = button.closest('.cli')?.querySelector('code')?.textContent
+        || button.closest('.cmd-row, .cs-row')?.querySelector('code.cmd')?.textContent;
+      if (text) void copyText(text.replace(/\s+$/, ''));
+      return;
     }
+    // On the cheatsheet any command outside a code block copies on click, unless the reader is selecting text.
+    const inline = e.target.closest('.cheatsheet-prose :not(pre) > code.cmd');
+    if (inline?.textContent && window.getSelection()?.isCollapsed !== false) { void copyText(inline.textContent); return; }
     const link = e.target.closest('a');
     if (link?.getAttribute('href')?.startsWith('#')) {
       const target = document.getElementById(link.getAttribute('href')!.slice(1));
@@ -247,6 +403,7 @@ function Document({ source, storageKey, selectable = false, fillIn = false, coll
   const values = fillIn ? savedValues : {};
   const [selected, setSelected] = useState<string[]>([]);
   const sections = doc.sections.filter(section => section.id !== 'introduction');
+  const timingSectionIds = sections.filter(section => ['Timing - NTP', 'Timing - Manual'].includes(section.title)).map(section => section.id);
   const comment = (text: string) => text.trim().split('\n').map(line => `# ${line.trim()}`).join('\n');
   // Unfilled variables stay as their <NAME> placeholder in the downloaded text.
   const modeSection = sections.find(section => section.title === 'Going into "config" mode and exiting')?.id || '';
@@ -260,18 +417,15 @@ function Document({ source, storageKey, selectable = false, fillIn = false, coll
       el.textContent = values[name] || `<${name}>`;
     });
     node.firstElementChild?.remove();
-    const blocks = Array.from(node.children).map(child => {
-      const commands = child.matches('.cli') && child.querySelector('code');
-      return commands && !child.hasAttribute('data-guidance')
-        ? commands.textContent?.trim() || ''
-        : comment(commands ? commands.textContent || '' : child.textContent || '');
-    });
-    return [comment(section.title), ...blocks].join('\n\n');
+    const formatted = document.createElement('div');
+    formatted.innerHTML = sectionCodeHtml(node.innerHTML);
+    const block = formatted.querySelector('.guide-section-block');
+    return [comment(section.title), block ? block.textContent || '' : comment(blockText(formatted))].join('\n\n');
   }).join('\n\n');
   const text = combined ? `${wrapConfig ? 'config\n\n' : ''}${combined}\n${wrapConfig ? '\nexit\n' : ''}` : '';
   return <>
     {selectable && <Panel title="Build your golden config" className="mb-5">
-      <p className="entry-note mb-4">Common day-one configs (NTP, licensing, SNMP, global profiles). Edit the &lt;PLACEHOLDER&gt; fields (unfilled ones download as &lt;NAME&gt;), then copy each block or download a selection.</p>
+      <p className="entry-note mb-4">Common day-one configs (NTP, licensing, SNMP, global profiles). Edit the &lt;PLACEHOLDER&gt; fields (unfilled ones download as &lt;NAME&gt;), then copy each block or download a selection. Selecting Timing - NTP or Timing - Manual clears the other timing option.</p>
       <div className="flex flex-wrap items-center gap-3">
         <button className="button primary" disabled={!selected.length}
           onClick={() => downloadFile('saos10-golden-config.txt', text)}><Download size={14} />Download selected .txt</button>
@@ -283,7 +437,12 @@ function Document({ source, storageKey, selectable = false, fillIn = false, coll
     <div className="document-layout">{selectable ? <div className="grid gap-5">
       {sections.map(section => <FieldNoteSection key={section.id} section={section} values={values}
         headingControl={<input type="checkbox" checked={selected.includes(section.id)} aria-label={`Include ${section.title}`}
-          onChange={e => setSelected(current => e.target.checked ? [...current, section.id] : current.filter(id => id !== section.id))} />} />)}
+          onChange={e => {
+            const checked = e.target.checked;
+            setSelected(current => checked
+              ? [...current.filter(id => !timingSectionIds.includes(section.id) || !timingSectionIds.includes(id)), section.id]
+              : current.filter(id => id !== section.id));
+          }} />} />)}
     </div> : <Panel><MarkdownBody html={html} values={values} /></Panel>}
       <nav className="document-toc" aria-label="On this page"><p>ON THIS PAGE</p>{doc.sections.filter(section => section.id !== 'introduction').map(section =>
         <a key={section.id} href={`#${section.id}`} onClick={e => { e.preventDefault(); revealSection(section.id); }}>{section.title}</a>)}</nav>
@@ -351,47 +510,58 @@ export function blockText(root: HTMLElement) {
   return (node.textContent || '').split('\n').map(line => line.replace(/\s+$/, '')).join('\n')
     .replace(/\n{3,}/g, '\n\n').trim();
 }
-function FieldNoteSection({ section, values, children, headingControl, includeSectionText = false }: {
-  section: Section; values: Record<string, string>; children?: ReactNode; headingControl?: ReactNode; includeSectionText?: boolean;
+function FieldNoteSection({ section, values, children, headingControl, variant = 'commented' }: {
+  section: Section; values: Record<string, string>; children?: ReactNode; headingControl?: ReactNode;
+  variant?: 'commented' | 'cheatsheet';
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const html = useMemo(() => {
+  const cheatsheet = variant === 'cheatsheet';
+  const html = useMemo(() => cheatsheet ? cheatsheetSectionHtml(section.html) : sectionCodeHtml(section.html),
+    [section.html, cheatsheet]);
+  const hasCommands = useMemo(() => {
+    if (!cheatsheet) return true;
     const node = document.createElement('div');
-    node.innerHTML = section.html;
-    commandBullets(node);
-    if (node.firstElementChild?.matches('h2, h3')) node.firstElementChild.remove();
-    return node.innerHTML;
-  }, [section.html]);
+    node.innerHTML = html;
+    return cheatsheetCommands(node).length > 0;
+  }, [html, cheatsheet]);
+  const Heading = cheatsheet ? 'h3' : 'h2';
   return <Panel id={section.id} className="field-note-section">
     <div ref={ref}>
-      <div className="field-note-heading">{headingControl}<h2>{section.title}</h2>
-        <button className="code-copy" aria-label={`Copy ${section.title}`} onClick={() => {
-          const copyRoot = ref.current?.cloneNode(true) as HTMLDivElement | undefined;
-          copyRoot?.querySelectorAll('button, input').forEach(control => control.remove());
-          const text = includeSectionText ? (copyRoot ? blockText(copyRoot) : '') : sectionCommands(ref.current).join('\n');
+      <div className="field-note-heading">{headingControl}<Heading>{section.title}</Heading>
+        {hasCommands && <button className="code-copy" aria-label={cheatsheet ? `Copy commands: ${section.title}` : `Copy ${section.title}`} onClick={() => {
+          const prose = ref.current?.querySelector<HTMLElement>('.prose');
+          const text = cheatsheet ? cheatsheetCommands(prose).join('\n')
+            : prose?.querySelector('.guide-section-block') ? sectionCommands(ref.current).join('\n') : prose ? blockText(prose) : '';
           if (!text) { notify('This section has no content to copy.'); return; }
           void copyText(text);
-        }}><Copy size={14} aria-hidden="true" /> Copy</button>
+        }}><Copy size={14} aria-hidden="true" /> {cheatsheet ? 'Copy commands' : 'Copy'}</button>}
       </div>
-      <MarkdownBody html={html} values={values} />
+      <MarkdownBody html={html} values={values} className={cheatsheet ? 'cheatsheet-prose' : ''} />
       {children}
     </div>
   </Panel>;
 }
 
+interface CheatsheetGroup { id: string; title: string; sections: Section[] }
+const personalTopic = 'my-entries';
+
 export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
+  // Level-two headings are topic groups; each level-three heading is a numbered section inside its group.
   const doc = useMemo(() => {
-    const parsed = parseDocument(content.cheatsheet, true, true);
-    let number = 0;
+    const groups: CheatsheetGroup[] = [];
     const seen = new Map<string, number>();
-    return { ...parsed, sections: parsed.sections.map(item => {
-      if (item.id === 'introduction') return item;
+    let number = 0;
+    for (const item of parseDocument(content.cheatsheet, true).sections) {
+      if (item.id === 'introduction') continue;
+      if (item.level === 2) { groups.push({ id: item.id, title: item.title, sections: [] }); continue; }
+      if (!groups.length) groups.push({ id: 'general', title: 'General', sections: [] });
       const count = (seen.get(item.id) || 0) + 1;
       seen.set(item.id, count);
-      return { ...item, id: count === 1 ? item.id : `${item.id}-${count}`, title: `#${++number} - ${item.title}` };
-    }) };
+      groups[groups.length - 1].sections.push({ ...item, id: count === 1 ? item.id : `${item.id}-${count}`, title: `#${++number} - ${item.title}` });
+    }
+    return { groups, sections: groups.flatMap(group => group.sections) };
   }, []);
-  const baseCount = doc.sections.filter(item => item.id !== 'introduction').length;
+  const baseCount = doc.sections.length;
   const [savedEntries, setEntries] = useStored('cheatsheet-user', [], isEntries);
   const [nextSaved, setNextSaved] = useStored('cheatsheet-next-number', baseCount + 1,
     (v): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0);
@@ -407,9 +577,11 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
   const nextNumber = Math.max(nextSaved, allocate);
   const values: Record<string, string> = {};
   const [query, setQuery] = useState('');
+  const [topic, setTopic] = useState('all');
   useEffect(() => {
     if (!sectionId) return;
     setQuery('');
+    setTopic('all');
     const frame = requestAnimationFrame(() => revealSection(sectionId));
     return () => cancelAnimationFrame(frame);
   }, [sectionId]);
@@ -420,7 +592,7 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
   const [note, setNote] = useState('');
   const file = useRef<HTMLInputElement>(null);
   const normalized = query.trim().toLowerCase();
-  const filtered = doc.sections.map(item => {
+  const matchSection = (item: Section): Section | null => {
     if (!normalized) return item;
     const node = document.createElement('div');
     node.innerHTML = item.html;
@@ -434,8 +606,17 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
       else child.remove();
     }
     return matches ? { ...item, html: node.innerHTML } : null;
-  }).filter((item): item is Section => item !== null);
-  const userFiltered = entries.filter(entry => `#${entry.number} ${entry.command} ${entry.note}`.toLowerCase().includes(normalized));
+  };
+  const groups = doc.groups.filter(group => topic === 'all' || topic === group.id)
+    .map(group => ({ ...group, sections: group.sections.map(matchSection).filter((item): item is Section => item !== null) }))
+    .filter(group => group.sections.length);
+  const filtered = groups.flatMap(group => group.sections);
+  const showPersonal = topic === 'all' || topic === personalTopic;
+  const userFiltered = showPersonal
+    ? entries.filter(entry => `#${entry.number} ${entry.command} ${entry.note}`.toLowerCase().includes(normalized)) : [];
+  const filtering = Boolean(normalized) || topic !== 'all';
+  const shown = filtered.length + userFiltered.length;
+  const jump = (id: string) => (e: { preventDefault: () => void }) => { e.preventDefault(); document.getElementById(id)?.scrollIntoView(); };
   async function importFile(selected: File) {
     if (importing) { notify('Wait for the current import to finish.'); return; }
     setImporting(true);
@@ -460,9 +641,9 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
   }
   return <>
     <PageHead eyebrow="VALIDATE / COMMAND REFERENCE" title="Your ultimate SAOS10 cheatsheet."
-      description="Searchable by task. Add your own entries and export them for your next deployment."
+      description="Grouped by topic and searchable. Copy one command or a whole section, add your own entries and export them for your next deployment."
       actions={<button className="button primary" disabled={importing} onClick={() => setAdding(!adding)}><Plus size={14} />Add entry</button>} />
-    <div className="flex flex-wrap items-center gap-3 mb-5">
+    <div className="cheatsheet-search flex flex-wrap items-center gap-3">
       <label className="search-field flex-1 min-w-48"><Search size={16} /><input value={query} type="search" aria-label="Search commands and notes" placeholder="Search commands and notes... e.g. lldp, cfm, ping" onChange={e => setQuery(e.target.value)} /></label>
       <button className="button" onClick={() => downloadFile('cheatsheet-my-entries.json', JSON.stringify(entries, null, 2), 'application/json')}><Download size={14} />Export</button>
       <button className="button" aria-label="Import entries" disabled={importing} onClick={() => file.current?.click()}><Upload size={14} />{importing ? 'Importing...' : 'Import'}</button>
@@ -472,6 +653,11 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
         downloadFile('cheatsheet-suggestions.md', md, 'text/markdown');
       }}><Download size={14} />Download suggestions</button>
       <input ref={file} hidden type="file" accept=".json,application/json" aria-label="Import cheatsheet JSON" onChange={e => { const selected = e.target.files?.[0]; if (selected) void importFile(selected); e.target.value = ''; }} />
+    </div>
+    <div className="cheatsheet-topics">
+      <Segments label="Topic" value={topic} onChange={setTopic} options={[{ id: 'all', label: 'All topics' },
+        ...doc.groups.map(group => ({ id: group.id, label: group.title })), { id: personalTopic, label: 'My entries' }]} />
+      {filtering && <p className="entry-note" role="status">Showing {shown} of {baseCount + entries.length} sections</p>}
     </div>
     {adding && <Panel title="Add a field note" className="mb-5"><form className="entry-form" onSubmit={e => {
       e.preventDefault();
@@ -489,6 +675,7 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
         if (!isEntryChanges(changes)) throw new Error('Saved activity history has an unsupported format');
         localStorage.setItem(historyKey, JSON.stringify([{ id, timestamp, preview }, ...changes]));
       } catch (error) { historyError = ` Activity history could not be updated: ${String(error)}. Existing history has not been overwritten.`; }
+      setTopic(current => current === 'all' ? current : personalTopic);
       setCommand(''); setNote(''); setAdding(false); notify(`Entry saved in this browser.${historyError}`);
     }}>
       <p className="entry-note">New section number: <strong>#{nextNumber}</strong></p>
@@ -498,15 +685,19 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
       <div className="flex gap-2"><button className="button primary" type="submit" disabled={importing}>Save entry</button><button className="button" type="button" onClick={() => setAdding(false)}><X size={14} />Cancel</button></div>
     </form></Panel>}
     <div className="document-layout"><div className="grid gap-5">
-      {filtered.map(item => <FieldNoteSection key={item.id} section={item} values={values} includeSectionText />)}
-      {!filtered.length && !userFiltered.length && <Panel><p>No matching commands or notes.</p></Panel>}
-      <Panel id="my-entries" title={`My entries (${userFiltered.length})`}>
+      {groups.map(group => <section key={group.id} className="cheatsheet-group" aria-labelledby={`topic-${group.id}`}>
+        <h2 id={`topic-${group.id}`} className="cheatsheet-group-title">{group.title}
+          <span>{group.sections.length} {group.sections.length === 1 ? 'section' : 'sections'}</span></h2>
+        <div className="grid gap-5">{group.sections.map(item =>
+          <FieldNoteSection key={item.id} section={item} values={values} variant="cheatsheet" />)}</div>
+      </section>)}
+      {!shown && <Panel><p>No matching commands or notes.</p></Panel>}
+      {showPersonal && <Panel id="my-entries" title={`My entries (${userFiltered.length})`}>
         <p className="entry-note">Stored in this browser only. Export to back up or share.</p>
         {!userFiltered.length && <p className="entry-note">No entries to show. Add a field note above.</p>}
-        <div className="grid gap-5">{userFiltered.map(entry => <FieldNoteSection key={entry.id}
-          section={{ id: `entry-${entry.id}`, title: `#${entry.number} - ${entry.note || entry.command.split('\n')[0]}`, html: '' }} values={values} includeSectionText>
-          <ul className="personal-command-list">{entry.command.split('\n').map((line, index) =>
-            <li key={index}><code className="personal-command">{line || ' '}</code></li>)}</ul>
+        <div className="grid gap-5">{userFiltered.map(entry => <FieldNoteSection key={entry.id} variant="cheatsheet"
+          section={{ id: `entry-${entry.id}`, title: `#${entry.number} - ${entry.note || entry.command.split('\n')[0]}`,
+            html: `${entry.note ? `<p>${escape(entry.note)}</p>` : ''}<div class="cli"><button type="button" class="copy" aria-label="Copy command block">${copyIcon} Copy</button><pre><code>${commentCode(entry.command)}</code></pre></div>` }} values={values}>
           <button className="text-action mt-2" disabled={importing} onClick={() => {
             if (confirm(`Delete "${entry.command.split('\n')[0]}"?`)) {
               setEntries(entries.filter(item => item.id !== entry.id));
@@ -514,7 +705,17 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
             }
           }}><Trash2 size={12} />Delete entry</button>
         </FieldNoteSection>)}</div>
-      </Panel>
-    </div><nav className="document-toc" aria-label="Cheatsheet sections"><p>SECTIONS</p>{[...filtered, ...userFiltered.map(entry => ({ id: `entry-${entry.id}`, title: `#${entry.number} - ${entry.note || entry.command.split('\n')[0]}` }))].map(item => <a key={item.id} href={`#${item.id}`} onClick={e => { e.preventDefault(); document.getElementById(item.id)?.scrollIntoView(); }}>{item.title}</a>)}</nav></div>
+      </Panel>}
+    </div><nav className="document-toc cheatsheet-toc" aria-label="Cheatsheet sections"><p>SECTIONS</p>
+      {groups.map(group => <div key={group.id} className="toc-group">
+        <a className="toc-group-title" href={`#topic-${group.id}`} onClick={jump(`topic-${group.id}`)}>{group.title}</a>
+        {group.sections.map(item => <a key={item.id} href={`#${item.id}`} onClick={jump(item.id)}>{item.title}</a>)}
+      </div>)}
+      {userFiltered.length > 0 && <div className="toc-group">
+        <a className="toc-group-title" href="#my-entries" onClick={jump('my-entries')}>My entries</a>
+        {userFiltered.map(entry => <a key={entry.id} href={`#entry-${entry.id}`} onClick={jump(`entry-${entry.id}`)}>
+          #{entry.number} - {entry.note || entry.command.split('\n')[0]}</a>)}
+      </div>}
+    </nav></div>
   </>;
 }
