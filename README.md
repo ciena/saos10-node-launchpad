@@ -40,4 +40,4 @@ Examples use placeholders for environment-specific values. Do not add credential
 
 The SAOS Fundamentals page adapts material from [ciena/saos-labs](https://github.com/ciena/saos-labs) under Apache-2.0; attribution is shown in the app and the license text is included with the source and standalone build. The bundled OpenDyslexic fonts retain their SIL Open Font License notice.
 
-No project-level license is included in this staging copy. Confirm the Ciena-approved license and branding terms before publishing; a public repository alone does not grant reuse rights.
+The project is licensed under Apache-2.0; see [LICENSE](https://github.com/ciena/saos10-node-launchpad/blob/main/LICENSE). Confirm Ciena's content and branding approvals before publishing.

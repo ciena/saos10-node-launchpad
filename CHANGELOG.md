@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-15
+
+### Added
+
+- Added the Apache License 2.0 as the project license.
+
 ## [1.0.1] - 2026-11-15
 
 ### Changed
