@@ -276,6 +276,8 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           expect(document.querySelector('#view').textContent.includes('The app generates configuration text')
             && document.querySelector('#view').textContent.includes('does not connect to, configure, or control a device'),
             'Instructions page does not include README guidance for AI assistants');
+          expect(document.querySelector('.prose a[href="https://github.com/ciena/saos10-node-launchpad/blob/main/LICENSE"]'),
+            'Instructions do not link to the project license');
           await navigate('l3ip');
           expect(!document.querySelector('.profile-manager'), 'Saved profile panel should be removed');
           expect(/built \\d{4}-\\d{2}-\\d{2}/.test(document.querySelector('.app-footer').textContent) && !document.querySelector('.age-notice'),
