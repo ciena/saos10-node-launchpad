@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-15
+
+### Changed
+
+- Organized the CLI Cheatsheet by topic, with command-only copy controls and clearer prose.
+- Updated guide formatting and made NTP and manual timing selections mutually exclusive.
+- Hardened build, preview, and release workflows while retaining opt-in publication.
+
+### Fixed
+
+- Corrected guide examples, descriptions, and placeholder handling while preserving public-safe guidance.
+
 ## [1.0.0] - 2026-11-11
 
 ### Added
