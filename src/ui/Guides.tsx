@@ -647,11 +647,11 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
       <label className="search-field flex-1 min-w-48"><Search size={16} /><input value={query} type="search" aria-label="Search commands and notes" placeholder="Search commands and notes... e.g. lldp, cfm, ping" onChange={e => setQuery(e.target.value)} /></label>
       <button className="button" onClick={() => downloadFile('cheatsheet-my-entries.json', JSON.stringify(entries, null, 2), 'application/json')}><Download size={14} />Export</button>
       <button className="button" aria-label="Import entries" disabled={importing} onClick={() => file.current?.click()}><Upload size={14} />{importing ? 'Importing...' : 'Import'}</button>
-      <button className="button" onClick={() => {
+      <button className="button" title="Review your entries in a public GitHub issue before submitting. Do not include secrets or customer data." onClick={() => {
         if (!entries.length) { notify('Add an entry first'); return; }
-        const md = '# Cheatsheet suggestions\n\n' + entries.map(entry => `### ${entry.section}\n\n\`\`\`cli\n${entry.command}\n\`\`\`\n${entry.note}`).join('\n\n');
-        downloadFile('cheatsheet-suggestions.md', md, 'text/markdown');
-      }}><Download size={14} />Download suggestions</button>
+        const md = entries.map(entry => `### ${entry.section}\n\n\`\`\`cli\n${entry.command}\n\`\`\`\n${entry.note}`).join('\n\n');
+        window.open(`https://github.com/ciena/saos10-node-launchpad/issues/new?title=${encodeURIComponent('Cheatsheet: proposed entries')}&body=${encodeURIComponent(md)}`, '_blank', 'noopener,noreferrer');
+      }}>Add tip to GitHub</button>
       <input ref={file} hidden type="file" accept=".json,application/json" aria-label="Import cheatsheet JSON" onChange={e => { const selected = e.target.files?.[0]; if (selected) void importFile(selected); e.target.value = ''; }} />
     </div>
     <div className="cheatsheet-topics">

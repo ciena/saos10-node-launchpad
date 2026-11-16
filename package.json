@@ -1,7 +1,7 @@
 {
   "name": "saos10-node-launchpad",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "license": "Apache-2.0",
   "type": "module",
   "description": "SAOS10 Node Launchpad (SNL): SAOS 10 quickstart guide and node configuration tools",

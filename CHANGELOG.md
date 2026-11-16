@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-16
+
+### Changed
+
+- Replaced the CLI Cheatsheet suggestion download with an Add tip to GitHub button that opens a prefilled issue in the public repository for review.
+
 ## [1.0.2] - 2026-11-15
 
 ### Added

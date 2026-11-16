@@ -1495,6 +1495,18 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             else delete navigator.clipboard;
             document.execCommand = originalExecCommand;
           }
+          const tipButton = () => [...document.querySelectorAll('button')].find(button => button.textContent === 'Add tip to GitHub');
+          expect(tipButton() && ![...document.querySelectorAll('button')].some(button => /Download suggestions/i.test(button.textContent)),
+            'Public cheatsheet must offer GitHub tips instead of suggestion downloads');
+          const originalOpen = window.open;
+          const tipWindows = [];
+          try {
+            window.open = (...args) => { tipWindows.push(args); return null; };
+            const before = notifications.length;
+            tipButton().click(); await tick();
+            expect(!tipWindows.length && notifications.slice(before).includes('Add an entry first'),
+              'Submitting an empty cheatsheet must prompt for an entry without opening GitHub');
+          } finally { window.open = originalOpen; }
           [...document.querySelectorAll('button')].find(button => button.textContent === 'Add entry').click(); await tick();
           nativeInput(document.querySelector('.entry-form textarea'), 'show browser-smoke');
           nativeInput(document.querySelector('.entry-form input'), 'Browser field note'); await tick();
@@ -1508,6 +1520,20 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           expect(firstNumber === numbered.length + 1, 'Add entry did not assign the next section number');
           expect(document.getElementById('my-entries').querySelector('h2').textContent.includes('My entries'), 'Personal section group missing');
           expect(document.querySelector('#my-entries .field-note-heading h3').textContent.startsWith('#' + firstNumber), 'Personal entry number missing');
+          try {
+            window.open = (...args) => { tipWindows.push(args); return null; };
+            tipButton().click(); await tick();
+            expect(tipWindows.length === 1, 'Tip submission did not open exactly one GitHub draft');
+            const [href, target, features] = tipWindows[0];
+            const issue = new URL(href);
+            expect(issue.origin === 'https://github.com' && issue.pathname === '/ciena/saos10-node-launchpad/issues/new',
+              'Tip submission does not target the public repository');
+            const entries = JSON.parse(localStorage.getItem('snl-cheatsheet-user'));
+            const expected = entries.map(entry => '### ' + entry.section + '\\n\\n' + String.fromCharCode(96).repeat(3) + 'cli\\n' + entry.command + '\\n' + String.fromCharCode(96).repeat(3) + '\\n' + entry.note).join('\\n\\n');
+            expect(issue.searchParams.get('title') === 'Cheatsheet: proposed entries' && issue.searchParams.get('body') === expected,
+              'Tip issue draft did not preserve the saved commands and notes');
+            expect(target === '_blank' && features === 'noopener,noreferrer', 'Tip draft window is missing isolation');
+          } finally { window.open = originalOpen; }
           const activity = JSON.parse(localStorage.getItem('snl-cheatsheet-changelog-v0.8.14'));
           expect(activity.length === 1 && activity[0].preview === 'show browser-smoke\\nBrowser field note', 'Entry activity snapshot missing');
           expect(!Number.isNaN(Date.parse(activity[0].timestamp)) && activity[0].timestamp.includes('T'), 'Activity timestamp is not full ISO date-time');
