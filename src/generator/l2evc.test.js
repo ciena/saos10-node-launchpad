@@ -24,6 +24,44 @@ test('default (non-392x UNI/UNI ELAN) config', () => {
   assert.deepEqual(generate({ cfm: { enabled: false } }).cfm, out.cfm);
 });
 
+test('VLAN sets merge adjacent and overlapping IDs and reuse classifiers on both UNI endpoints', () => {
+  const out = generate({
+    left: { vlan: '355, 352,350-351,351' }, right: { vlan: '350-352,355' },
+  });
+  assert.deepEqual(out.warnings.filter(w => w.level === 'error'), []);
+  const classifiers = out.config.filter(({ text }) => text.startsWith('classifiers classifier'));
+  assert.deepEqual(classifiers.map(({ text }) => text), [
+    'classifiers classifier CLASSIFIER_350-352 filter-entry classifier:vtag-stack vtags 1 vlan-id 350 vlan-id-max 352',
+    'classifiers classifier CLASSIFIER_355 filter-entry classifier:vtag-stack vtags 1 vlan-id 355',
+  ]);
+  for (const id of ['C20', 'C24']) assert.match(byId(out, id), /classifier-list CLASSIFIER_350-352 CLASSIFIER_355$/);
+  assert.deepEqual(out.nuke.filter(text => text.startsWith('no classifiers')), [
+    'no classifiers classifier CLASSIFIER_350-352', 'no classifiers classifier CLASSIFIER_355',
+  ]);
+  assert.equal(out.diagram.K12, '350-352, 355');
+  assert.equal(out.diagram.G12, 'c350');
+  assert.match(byId(out, 'C113'), /vlanid 350$/);
+  const explicit = generate({ left: { vlan: '350-352,355' }, right: { vlan: '350-352,355' }, cfm: { tagVlan: '352' } });
+  assert.match(byId(explicit, 'C113'), /vlanid 352$/);
+  assert.ok(!explicit.soam.notes.includes('classifier-miss'));
+});
+
+test('gapped VLANs get separate classifiers and cannot hide a UNI mismatch or fixed egress rewrite', () => {
+  const out = generate({ left: { vlan: '350, 352' }, right: { role: 'ENNI', vlan: '900' }, cfm: { enabled: false } });
+  assert.deepEqual(out.warnings.filter(w => w.level === 'error'), []);
+  assert.match(byId(out, 'C20'), /classifier-list CLASSIFIER_350 CLASSIFIER_352$/);
+  assert.match(byId(out, 'C26'), /push-vid 900$/);
+  assert.ok(generate({ left: { vlan: '350,352' }, right: { vlan: '350-352' } }).warnings
+    .some(w => w.level === 'error' && w.field === 'right.vlan' && w.msg.includes('must match')));
+  const invalidEgress = generate({ right: { role: 'ENNI', vlan: '350-352' } });
+  assert.ok(invalidEgress.warnings.some(w => w.level === 'error' && w.field === 'right.vlan' && w.msg.includes('requires a single VLAN')));
+  for (const vlan of ['0', '4094-4095', '352-350', '350,,352', '350,', '350 352', '350-352x']) {
+    const invalid = generate({ left: { vlan } });
+    assert.ok(invalid.warnings.some(w => w.level === 'error' && w.field === 'left.vlan'), vlan);
+    assert.deepEqual(invalid.vars.left.classifiers, []);
+  }
+});
+
 test('392x UNI -> ENNI uses push / stamp / pop and FD vlan-id', () => {
   const out = generate({ device: DEVICE_392X, right: { role: 'ENNI', vlan: '200' } });
   assert.equal(byId(out, 'C19'), 'fds fd test1 description test1 mode vpls vlan-id 83');

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react';
-import { ArrowRight, BookOpen, Cable, CheckCircle2, ChevronRight, Download, LayoutDashboard, Menu, Moon, Network, Settings, ShieldCheck, Sun, Terminal, X } from 'lucide-react';
+import { ArrowRight, BookOpen, Cable, CheckCircle2, ChevronRight, Download, Github, LayoutDashboard, Menu, Moon, Network, Settings, ShieldCheck, Sun, Terminal, X } from 'lucide-react';
 import logo from '../assets/ciena-logo.svg?inline';
 import { type Route, type Theme, notify, useStored } from './state';
 import { Panel } from './components';
@@ -95,9 +95,13 @@ export function App() {
       </nav>
       <div className="header-actions">
         <a className="button primary download-html" href={location.protocol === 'file:' ? location.href.split('#')[0] : `./saos10-node-launchpad-v${__APP_VERSION__}.html`}
-          download={`saos10-node-launchpad-v${__APP_VERSION__}.html`} onClick={e => {
+          download={`saos10-node-launchpad-v${__APP_VERSION__}.html`} title="Download standalone HTML" onClick={e => {
             if (import.meta.env.DEV) { e.preventDefault(); notify('Run npm run package to create the offline HTML download.'); }
           }}><Download size={15} /><span>Download HTML</span></a>
+        <a className="icon-button github-project" href="https://github.com/ciena/saos10-node-launchpad" target="_blank" rel="noopener noreferrer"
+          aria-label="GitHub project" title="GitHub project">
+          <Github size={19} aria-hidden="true" />
+        </a>
         <button className="icon-button mobile-menu" aria-expanded={mobileOpen} aria-controls="app-navigation" aria-label="Toggle navigation"
           onClick={() => setMobileOpen(!mobileOpen)}>{mobileOpen ? <X size={19} /> : <Menu size={19} />}</button>
         <button className="icon-button" aria-label="Page settings" aria-haspopup="dialog" onClick={() => settings.current?.showModal()}><Settings size={19} /></button>

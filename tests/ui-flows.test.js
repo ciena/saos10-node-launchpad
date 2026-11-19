@@ -102,8 +102,15 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             && document.title.endsWith('SAOS10 Node Launchpad')
             && !/[·←→▶◀❚]/u.test(document.title),
             'New product branding is incomplete');
-          expect(document.querySelector('.download-html').getAttribute('download').startsWith('saos10-node-launchpad-v'),
+          const downloadLink = document.querySelector('.download-html');
+          expect(downloadLink.getAttribute('download').startsWith('saos10-node-launchpad-v'),
             'Standalone download filename does not use the new brand');
+          expect(downloadLink.title === 'Download standalone HTML', 'Standalone download tooltip is missing');
+          const projectLink = document.querySelector('.download-html + a');
+          expect(projectLink?.getAttribute('aria-label') === 'GitHub project' && projectLink.querySelector('svg.lucide-github')
+            && projectLink.href === 'https://github.com/ciena/saos10-node-launchpad'
+            && projectLink.target === '_blank' && projectLink.relList.contains('noopener'),
+            'The header must link to the public GitHub project immediately after Download HTML');
           expect(document.documentElement.dataset.theme === 'dark' && localStorage.getItem('snl-theme') === 'dark',
             'Legacy theme preference was not migrated');
           localStorage.setItem('tbf-cheatsheet-changelog', JSON.stringify([
@@ -210,6 +217,17 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             nativeInput(settings.querySelector('[aria-label="Text size"]'), String(size)); await tick();
             expect(parseFloat(getComputedStyle(document.body).fontSize) > initialFontSize, 'Text-size slider did not enlarge fonts immediately');
           }
+          const projectBackgrounds = new Set();
+          const colorSample = document.createElement('canvas').getContext('2d');
+          const rgb = color => {
+            colorSample.fillStyle = color;
+            colorSample.fillRect(0, 0, 1, 1);
+            return [...colorSample.getImageData(0, 0, 1, 1).data].slice(0, 3);
+          };
+          const luminance = color => rgb(color).map(channel => {
+            const s = channel / 255;
+            return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+          }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
           for (const palette of ['ciena', 'ocean', 'orchid']) {
             await changeSelect('Color scheme', palette);
             expect(document.documentElement.dataset.palette === palette, 'Palette did not apply immediately');
@@ -219,9 +237,20 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
               expect(document.documentElement.dataset.theme === theme, 'Theme did not apply immediately');
               expect(getComputedStyle(settings).backgroundColor === getComputedStyle(document.querySelector('.overview-directory-item')).backgroundColor,
                 'Settings panel does not follow appearance colors');
+              const { backgroundColor, color } = getComputedStyle(projectLink);
+              const bg = luminance(backgroundColor), fg = luminance(color);
+              expect((Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05) >= 3,
+                'GitHub icon lacks contrast in ' + palette + ' ' + theme);
+              for (const selector of ['.app-header', '.download-html']) {
+                const other = rgb(getComputedStyle(document.querySelector(selector)).backgroundColor);
+                expect(rgb(backgroundColor).some((channel, i) => Math.abs(channel - other[i]) >= 30),
+                  'GitHub button background blends into ' + selector + ' in ' + palette + ' ' + theme);
+              }
+              projectBackgrounds.add(backgroundColor);
               await checkOverview();
             }
           }
+          expect(projectBackgrounds.size === 6, 'The GitHub button background did not update across themes and palettes');
           await changeSelect('Reading font', 'opendyslexic');
           await document.fonts.load('16px OpenDyslexic');
           expect(document.fonts.check('16px OpenDyslexic') && getComputedStyle(document.querySelector('h1')).fontFamily.includes('OpenDyslexic'),
@@ -414,6 +443,20 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           }
           nativeInput(document.getElementById('l2-serviceName'), 'browser-l2'); await tick();
           expect(document.querySelector('.code-block').textContent.includes('browser-l2'), 'L2 commands did not update');
+          {
+            const left = document.getElementById('l2-left-vlan'), right = document.getElementById('l2-right-vlan');
+            const help = document.getElementById(left.getAttribute('aria-describedby')).querySelector('details');
+            help.querySelector('summary').click(); await tick();
+            expect(help.open && help.textContent.includes('350-352'), 'VLAN help did not open with a range example');
+            help.querySelector('summary').click(); await tick();
+            nativeInput(left, '350, 351,352,355'); nativeInput(right, '350-352,355'); await tick();
+            const cli = document.querySelector('.code-block').textContent;
+            expect(cli.includes('vlan-id 350 vlan-id-max 352') && cli.includes('classifier-list CLASSIFIER_350-352 CLASSIFIER_355'),
+              'VLAN sets did not generate a merged range and a standalone classifier');
+            nativeInput(right, '352-350'); await tick();
+            expect(document.querySelector('.output-panel .panel-heading button').disabled, 'Invalid VLAN range did not block output');
+            nativeInput(left, savedOam.left.vlan); nativeInput(right, savedOam.right.vlan); await tick();
+          }
           for (const side of ['left', 'right']) {
             const vlanField = document.getElementById('l2-' + side + '-vlan').closest('[data-field]').parentElement;
             for (const [key, label] of [['allTags', 'All Tags'], ['untagged', 'Untagged']]) {
@@ -509,7 +552,7 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
               'Hint sentences must render on separate lines: ' + id);
           }
           for (const side of ['left', 'right']) {
-            expect(!document.getElementById('l2-' + side + '-vlan-hint')
+            expect(document.querySelector('#l2-' + side + '-vlan-hint summary')?.textContent.includes('VLAN input help')
               && document.getElementById('l2-' + side + '-role-hint').textContent.includes('ENNI = network-facing with S-VLAN.'),
               'Endpoint hint changes missing');
             for (const key of ['allTags', 'untagged', 'l2cp']) {

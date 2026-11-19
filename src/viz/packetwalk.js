@@ -12,6 +12,8 @@ export function parseTags(v) {
   if (/^untagged$/i.test(s)) return [{ kind: 'none', text: 'untagged' }];
   if (/^alltags$/i.test(s)) return [{ kind: 'any', text: 'all tags' }];
   if (/^\d+$/.test(s)) return [{ kind: 'c', text: s }];
+  if (/^\d+-\d+$/.test(s)) return [{ kind: 'c', text: s }];
+  if (s.includes(',')) return [{ kind: 'c', text: 'VLAN set' }];
   return s.split(':').filter(Boolean).map(t => {
     const kind = t[0].toLowerCase() === 's' ? 's' : 'c';
     const id = t.slice(1);

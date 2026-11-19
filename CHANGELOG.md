@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-11-19
+
+### Added
+
+- Accept VLAN ranges and comma-separated lists in the EVC Builder. Consolidate consecutive IDs into range classifiers and show supported input examples.
+- Add a theme-aware GitHub button that links to the public project and a "Download standalone HTML" tooltip on the Download HTML button.
+
 ## [1.0.3] - 2026-11-16
 
 ### Changed

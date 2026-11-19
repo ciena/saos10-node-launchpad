@@ -1,7 +1,7 @@
 import { Component, createContext, useContext, useId, useState, type ComponentProps, type ReactNode, type ErrorInfo } from 'react';
 import { withInlineComments } from '../lib/config-comments.js';
 import { DEVICE_392X } from '../generator/l2evc.js';
-import { ArrowLeft, Check, ChevronDown, Copy, Download, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, CircleHelp, Copy, Download, RotateCcw } from 'lucide-react';
 import type { Field, L2Input, Value } from './state';
 import { copyText, downloadFile, fieldValue } from './state';
 
@@ -89,6 +89,11 @@ export function L2Fields({ input, fields, advanced, onChange, onFocus, prefix = 
         onChange={value => onChange(f.path, value)} options={f.options} check={f.type === 'check'} advanced={f.tier === 'advanced'}
         hint={f.path === 'emitMtu' ? undefined : f.path.endsWith('.pfg') && input.device === DEVICE_392X
           ? 'Not supported by this builder on 392x. Logical-port PFG group policies require separate configuration.'
+          : f.path.endsWith('.vlan') ? <details>
+            <summary><CircleHelp size={13} className="inline" aria-hidden="true" /> VLAN input help</summary>
+            Enter a single ID (350), a range (350-352), or a comma-separated list (350, 352). You can mix ranges and IDs.
+            IDs must be 1-4094. Consecutive IDs share a range classifier. An egress push or stamp needs a single VLAN.
+          </details>
           : f.path === 'cfm.localMep' ? <>Must match the <strong><u>far end's Remote MEP ID</u></strong>.</>
           : f.path === 'cfm.remoteMep' ? <>Must match the <strong><u>far end's Local MEP ID</u></strong>.</>
           : typeof f.hint === 'function' ? f.hint(input) : f.hint} />
