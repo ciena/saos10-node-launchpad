@@ -69,6 +69,12 @@ h1 { font-size: clamp(1.9rem, 3vw, 2.65rem); } h2 { font-size: 1.15rem; } h3 { f
 .button.primary:hover { background: var(--ciena-red-600); border-color: var(--ciena-red-600); }
 .icon-button { display: inline-grid; place-items: center; height: 34px; width: 34px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); }
 .icon-button:hover { background: var(--hover); }
+.github-project {
+  color: var(--link);
+  background: color-mix(in srgb, var(--link) 22%, var(--accent-soft));
+  border-color: var(--link);
+}
+.github-project:hover { background: color-mix(in srgb, var(--link) 28%, var(--accent-soft)); }
 .mobile-menu { display: none; }
 .app-navigation { background: var(--surface); border-right: 1px solid var(--border); padding: 25px 14px; display: flex; flex-direction: column; gap: 32px; }
 .app-navigation nav { position: sticky; top: 24px; }

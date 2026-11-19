@@ -96,7 +96,7 @@ export const CFM_EXTRA_FIELDS = [
   ...[
     select('tagCount', 'CFM tag format', '', 'single', ['single', 'double']),
     select('tagTpid', 'CFM outer TPID', 'tpid', 'tpid-8100', ['tpid-8100', 'tpid-88a8', 'tpid-9100']),
-    text('tagVlan', 'CFM outer VLAN override', 'vlanid', 'Blank uses the selected endpoint VLAN.', 'vlan'),
+    text('tagVlan', 'CFM outer VLAN override', 'vlanid', 'Blank uses the lowest VLAN on the selected endpoint.', 'vlan'),
     select('tagPcp', 'CFM outer PCP', 'pcp', '', ['', ...Array.from({ length: 8 }, (_, i) => `pcp-${i}`)]),
     select('tagDei', 'CFM outer DEI', 'dei', '', ['', 'enabled', 'disabled']),
     select('innerTpid', 'CFM inner TPID', 'tpid', 'tpid-8100', ['tpid-8100', 'tpid-88a8', 'tpid-9100']),

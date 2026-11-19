@@ -140,7 +140,7 @@ export function L2Builder() {
       {(['left', 'right'] as const).filter(side => out.fixedCos[side].used).map(side => <CodeBlock key={side} title={`Fixed CoS profile - ${side}`} lines={out.fixedCos[side].lines} />)}
     </> },
     { id: 'show', label: 'Verify', content: <CodeBlock title="Service & CFM verification" lines={[...out.show, ...(input.cfm.enabled ? out.cfm.show : [])]} /> },
-    { id: 'nuke', label: 'Remove', content: <><p className="note">Shared classifiers may be used by other services. Check before removing.</p><CodeBlock title="Service removal" lines={['config', ...out.nuke, 'exit']} /></> },
+    { id: 'nuke', label: 'Remove', content: <><p className="note">Shared classifiers may be used by other services. Check before removing.</p><CodeBlock title="Service removal" lines={errors.length ? [] : ['config', ...out.nuke, 'exit']} /></> },
     { id: 'global', label: 'One-time setup', content: <>
       <CodeBlock title="Global CFM" lines={out.cfm.global} />
       <CodeBlock title="Template classifiers" lines={Engine.SAMPLE_ONE_TIME.classifiers} />
@@ -163,6 +163,8 @@ export function L2Builder() {
       <Segments label="Visualization" value={visual} options={visuals.map(option => ({ id: option.id, label: option.title }))}
         onChange={(value: Kind) => { setVisual(value); setWalkExpanded(false); model.select([]); }} />
     </div>
+    {visual !== 'map' && [out.diagram.K12, out.diagram.V15].some(label => /[,-]/.test(label)) &&
+      <p className="entry-note">The packet walk uses the lowest VLAN in each set as an example. Classifier labels describe the full match.</p>}
     <div id={diagramId}>
       <Diagram model={model} kind={visual} />
     </div>

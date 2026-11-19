@@ -75,23 +75,50 @@ function line(id, text, objects = [], explain = '') {
   return { id, text, skip: text.startsWith('#'), objects, explain };
 }
 
+function vlanRanges(value) {
+  const ranges = [];
+  for (const token of String(value).split(',')) {
+    const match = /^(\d+)(?:[ \t]*-[ \t]*(\d+))?$/.exec(token.trim());
+    if (!match) return [];
+    const min = Number(match[1]), max = Number(match[2] ?? match[1]);
+    if (min < 1 || max > 4094 || min > max) return [];
+    ranges.push({ min, max });
+  }
+  ranges.sort((a, b) => a.min - b.min);
+  const merged = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous && range.min <= previous.max + 1) previous.max = Math.max(previous.max, range.max);
+    else merged.push(range);
+  }
+  return merged;
+}
+
+const rangeLabel = ({ min, max }) => min === max ? String(min) : `${min}-${max}`;
+const classifierName = range => `CLASSIFIER_${rangeLabel(range)}`;
+const vlanLabel = ranges => ranges.map(rangeLabel).join(', ');
+const multiVlan = ranges => ranges.length > 1 || (ranges.length === 1 && ranges[0].min !== ranges[0].max);
+const classified = side => !side.allTags && !side.untagged;
+
 /** Rows 75-86: the generated variables for one side. */
 function sideVars(inp, side) {
   const s = inp[side];
   const is392 = inp.device === DEVICE_392X;
+  const ranges = vlanRanges(s.vlan);
+  const egVid = ranges.length ? String(ranges[0].min) : '';
+  const matchesFd = !multiVlan(ranges) && eq(egVid, inp.fdSvlan);
   const lp = s.port === 'LAG' ? s.lagName : s.port;                                   // D77 / F77
   const fp = `fp${String(lp).replace(/\//g, '_')}_${inp.serviceName}`;                 // D78 / F78
-  const autoIn = is392 ? (s.role === 'UNI' ? 'push-vid' : (eq(s.vlan, inp.fdSvlan) ? 'no-op' : 'stamp-vid-value'))
+  const autoIn = is392 ? (s.role === 'UNI' ? 'push-vid' : (matchesFd ? 'no-op' : 'stamp-vid-value'))
     : (s.role === 'UNI' ? 'no-op' : 'pop-type');                                        // D79 / F79
-  const autoEg = is392 ? (s.role === 'UNI' ? 'pop-type' : (eq(s.vlan, inp.fdSvlan) ? 'no-op' : 'stamp-vid-value'))
+  const autoEg = is392 ? (s.role === 'UNI' ? 'pop-type' : (matchesFd ? 'no-op' : 'stamp-vid-value'))
     : (s.role === 'UNI' ? 'no-op' : 'push-vid');                                        // D83 / F83
   const inOp = s.ingressOp || autoIn;
   const egOp = s.egressOp || autoEg;
   const inVid = String(inp.fdSvlan);                                                   // D80 / F80
-  const egVid = String(s.vlan);                                                        // D84 / F84
   const xName = (dir, op, vid) => op === 'push-vid' ? `${dir}Push${vid}` : op === 'pop-type' ? `${dir}Pop` : op === 'stamp-vid-value' ? `${dir}Stamp${vid}` : '';
   return {
-    lp, fp,
+    lp, fp, ranges, classifiers: classifierList(s, ranges),
     inOp, inOpAuto: autoIn, inVid, inTpid: s.ingressTpid, inName: xName('ingress', inOp, inVid),   // D82 / F82
     egOp, egOpAuto: autoEg, egVid, egTpid: s.egressTpid, egName: xName('egress', egOp, egVid),     // D86 / F86
   };
@@ -129,23 +156,23 @@ function extrasLine(inp, s, v, sideName) {
     [`fp-${sideName}`, 'qos'], 'Flow-point extras: metering, CoS mapping and private-forwarding group.');
 }
 
-function classifierList(s) {
-  let l = '';
-  if (s.allTags) l += ' CLASSIFIER_4097';
-  if (s.untagged) l += ' CLASSIFIER_4096';
-  if (!s.allTags && !s.untagged) l += ` CLASSIFIER_${s.vlan}`;
-  if (s.l2cp) l += ' CLASSIFIER_L2cp';
-  return l;
+function classifierList(s, ranges) {
+  return [
+    ...(classified(s) ? ranges.map(classifierName) : []),
+    ...(s.allTags ? ['CLASSIFIER_4097'] : []),
+    ...(s.untagged ? ['CLASSIFIER_4096'] : []),
+    ...(s.l2cp ? ['CLASSIFIER_L2cp'] : []),
+  ];
 }
 
 /** Diagram cells G1:AA16 (tag stack seen at each stage of the packet walk). */
 function diagram(inp, L, R) {
   const { left: l, right: r } = inp;
   const is392 = inp.device === DEVICE_392X;
-  const D6 = l.vlan, D9 = r.vlan, D10 = inp.fdSvlan;
+  const D6 = L.egVid, D9 = R.egVid, D10 = inp.fdSvlan;
   const G12 = l.allTags ? 'cXXX' : l.untagged ? 'Untagged'
     : l.role === 'ENNI' ? (r.role === 'UNI' && !r.untagged ? `s${D6}:c${D9}` : (!r.untagged ? `s${D6}:cXXX` : `c${D6}`)) : `c${D6}`;
-  const K12 = l.untagged ? 'Untagged' : l.allTags ? 'AllTags' : D6;
+  const K12 = l.untagged ? 'Untagged' : l.allTags ? 'AllTags' : vlanLabel(L.ranges);
   let N12;
   if (eq(G12, 'Untagged') && is392) N12 = `c${L.inVid}`;
   else if (eq(G12, 'Untagged')) N12 = 'Untagged';
@@ -167,7 +194,7 @@ function diagram(inp, L, R) {
   else if (R.egOp === 'push-vid') T12 = eq(N12, 'untagged') ? `c${R.egVid}` : `s${R.egVid}:${N12}`;
   else T12 = N12;
   const Y12 = T12, Y15 = Y12;
-  const V15 = r.untagged ? 'Untagged' : r.allTags ? 'AllTags' : D9;
+  const V15 = r.untagged ? 'Untagged' : r.allTags ? 'AllTags' : vlanLabel(R.ranges);
   let S15;
   if (R.inOp === 'pop-type') S15 = String(Y15).slice(0, 1).toLowerCase() === 'c' ? 'Untagged' : (l.role === 'ENNI' ? 'cXXX' : `c${D6}`);
   else if (R.inOp === 'push-vid') S15 = eq(Y15, 'untagged') ? `c${R.inVid}` : `s${R.inVid}:${Y15}`;
@@ -214,7 +241,7 @@ export function soamTrail(inp, L, R) {
   const c = inp.cfm;
   if (!c.enabled) return null;
   const own = c.endpoint === 'Left' ? L : R, far = c.endpoint === 'Left' ? R : L;
-  const vlan = String(c.tagVlan || (c.endpoint === 'Left' ? inp.left.vlan : inp.right.vlan));
+  const vlan = String(c.tagVlan || own.egVid);
   const mep = !c.tagged ? [] : c.tagCount === 'double'
     ? [{ k: 's', v: vlan }, { k: 'c', v: String(c.innerVlan || vlan) }] : [{ k: 'c', v: vlan }];
   const opText = (op, vid) => `${OP_TEXT[op]}${op === 'pop-type' ? '' : ` ${vid}`}`;
@@ -244,14 +271,16 @@ export function soamTrail(inp, L, R) {
   if (wire.length > 2) notes.push('three-tags');
   if (c.direction === 'Up' && far.egOp === 'stamp-vid-value' && mep.length) notes.push('up-stamp-review');
   // The flow point on the wire is the far one for an Up MEP and the MEP's own for a Down MEP.
-  const wireSide = inp[(c.direction === 'Up') === (c.endpoint === 'Left') ? 'right' : 'left'];
-  const classVlan = wireSide.untagged || wireSide.allTags ? '' : String(wireSide.vlan);
-  if (classVlan && !notes.length && (!wire.length || wire[0].v !== classVlan)) notes.push('classifier-miss');
+  const wireKey = (c.direction === 'Up') === (c.endpoint === 'Left') ? 'right' : 'left';
+  const ranges = (wireKey === 'right' ? R : L).ranges;
+  const wireVid = Number(wire[0]?.v);
+  if (classified(inp[wireKey]) && ranges.length && !notes.length &&
+      !ranges.some(({ min, max }) => wireVid >= min && wireVid <= max)) notes.push('classifier-miss');
   return { direction: c.direction, mep: stackStr(mep), wire: stackStr(wire), steps, notes };
 }
 
-function soamWarnings(inp, warn, info) {
-  const t = soamTrail(inp, sideVars(inp, 'left'), sideVars(inp, 'right'));
+function soamWarnings(inp, L, R, warn, info) {
+  const t = soamTrail(inp, L, R);
   if (!t) return;
   if (t.notes.includes('vlan4095'))
     warn('cfm.tagged', 'This 392x packet-walk model shows VLAN 4095 for an untagged Down MEP. Check the peer classifier and validate the behavior on the target platform.');
@@ -269,26 +298,27 @@ function soamWarnings(inp, warn, info) {
     info('cfm.tagged', 'For untagged CFM, review PCP handling for each Y.1731 message type on the target platform.');
 }
 
-function warnings(inp) {
+function warnings(inp, L, R) {
   const { left: l, right: r } = inp;
   const w = [];
   const push = level => (field, msg) => w.push({ level, field, msg });
   const err = push('error'), warn = push('warn'), info = push('info');
   for (const [k, s] of [['left', l], ['right', r]]) {
+    const v = k === 'left' ? L : R;
     const Side = k === 'left' ? 'Left' : 'Right';
     if (inp.emitMtu && (!/^\d+$/.test(String(s.mtu).trim()) || Number(s.mtu) < 1 || Number(s.mtu) > 9800))
       err(`${k}.mtu`, `${Side}: logical-port MTU must be a positive whole number no greater than 9800 bytes.`);
     if (s.role === 'ENNI' && (s.untagged || s.allTags)) err(`${k}.role`, `${Side}: an ENNI can NOT be Untagged/AllTags.`);
     if (s.port === 'LAG' && blank(s.lagName)) err(`${k}.lagName`, `${Side}: Logical Port is LAG, so a LAG name is required.`);
     else if (s.port === 'LAG') info(`${k}.lagName`, `${Side}: using LAG '${s.lagName}' as the logical port.`);
-    if (!s.untagged && !s.allTags) {
-      if (!/^\d+$/.test(String(s.vlan).trim())) err(`${k}.vlan`, `${Side}: VLAN must be a number (1-4094).`);
-      else if (Number(s.vlan) < 1 || Number(s.vlan) > 4094) err(`${k}.vlan`, `${Side}: VLAN must be 1-4094.`);
+    if (classified(s)) {
+      if (!v.ranges.length) err(`${k}.vlan`, `${Side}: enter VLAN IDs from 1-4094 as a single ID, ascending range, or comma-separated list.`);
     } else if (s.role === 'UNI') info(`${k}.vlan`, `${Side}: VLAN is unused when Untagged/AllTags is set.`);
+    if (['push-vid', 'stamp-vid-value'].includes(v.egOp) && (!v.ranges.length || multiVlan(v.ranges)))
+      err(`${k}.vlan`, `${Side}: the egress ${v.egOp} operation requires a single VLAN ID. Enter one VLAN or choose an egress operation that does not set a fixed VLAN ID.`);
     if (inp.device !== DEVICE_392X) info(`${k}.role`, s.role === 'UNI' ? `${Side}: UNI performs no L2 transforms on this device type.` : `${Side}: ENNI pushes/pops the transport outer tag (SVLAN).`);
     if (s.l2cp) info(`${k}.l2cp`, `${Side}: L2CP profile '${inp.l2cpProfile}' must already exist on the node (see the FWD_ALL sample).`);
     if (inp.device === DEVICE_392X) {
-      const v = sideVars(inp, k);
       if (!disabled(s.pfg))
         err(`${k}.pfg`, `${Side}: 392x does not support this builder's root/leaf FD PFG profile. Disable PFG; 392x logical-port group policies require separate configuration.`);
       if (v.inOp === 'push-vid' && s.ingressTpid !== 'tpid-8100')
@@ -297,7 +327,8 @@ function warnings(inp) {
         err(`${k}.egressOp`, `${Side}: 392x cannot use egress PUSH on a flow point whose FD has a VLAN. Use the supported pop/stamp/no-op operation for the service.`);
     }
   }
-  if (l.role === 'UNI' && r.role === 'UNI' && (l.untagged !== r.untagged || l.allTags !== r.allTags || !eq(l.vlan, r.vlan)))
+  if (l.role === 'UNI' && r.role === 'UNI' && (l.untagged !== r.untagged || l.allTags !== r.allTags ||
+      (classified(l) && classified(r) && vlanLabel(L.ranges) !== vlanLabel(R.ranges))))
     err('right.vlan', 'For UNI to UNI, VLANs, Untagged and AllTags must match on both sides.');
   if (l.pfg === 'leaf' && r.pfg === 'leaf') warn('left.pfg', 'PFG: at least one flow point should be root.');
   else if (disabled(r.pfg) && !disabled(l.pfg)) warn('right.pfg', "PFG: configure the Right flow point's PFG as well.");
@@ -308,14 +339,17 @@ function warnings(inp) {
   if (!/^[A-Za-z0-9_.-]+$/.test(String(inp.serviceName))) err('serviceName', 'Service name: use letters, digits, "_", "-" or "." only.');
   const c = inp.cfm;
   for (const issue of validateCfmOptions(c)) err(issue.field, issue.msg);
-  soamWarnings(inp, warn, info);
+  soamWarnings(inp, L, R, warn, info);
   const slmPeriod = c.slmMessagePeriod || MSG_PERIOD[c.slmInterval];
   const availabilityMs = Number(c.slmAvailabilityInterval) * 60 * 1000;
   if (c.enabled && c.slm && Number(slmPeriod) * Number(c.slmFlrMeasurements) * Number(c.slmConsecutiveIntervals) > availabilityMs)
     err('cfm.slmInterval', `SLM message period exceeds the ${c.slmAvailabilityInterval}-minute availability reporting interval: ${c.slmConsecutiveIntervals} consecutive intervals x ${c.slmFlrMeasurements} FLR measurements x message period must fit within ${availabilityMs / 1000} seconds. Select a faster period or adjust the Very advanced availability settings.`);
   if (c.enabled) {
     const mepSide = c.endpoint === 'Left' ? l : r;
+    const mepVars = c.endpoint === 'Left' ? L : R;
     if (c.tagged && mepSide.untagged && !mepSide.allTags) err('cfm.tagged', "Disable 'Tagged CFM' if Endpoint is Untagged-only.");
+    if (c.tagged && !c.tagVlan && multiVlan(mepVars.ranges))
+      warn('cfm.tagVlan', `Tagged CFM uses the lowest VLAN (${mepVars.egVid}) unless you set an Outer VLAN in Very advanced Service OAM.`);
     for (const key of ['localMep', 'remoteMep'])
       if (!/^\d+$/.test(String(c[key])) || Number(c[key]) < 1 || Number(c[key]) > 8191) err(`cfm.${key}`, 'MEP ID must be a whole number from 1 to 8191.');
     for (const p of ['dmm', 'slm']) {
@@ -374,8 +408,7 @@ function warnings(inp) {
       if (['primary-vid', 'uint16'].includes(c.maNameType) && (!/^\d+$/.test(name) || Number(name) > 65535 || (c.maNameType === 'primary-vid' && (Number(name) < 1 || Number(name) > 4094))))
         err('cfm.maWireName', 'Provide a numeric transmitted MA name for the selected name format.');
       if (c.tagged && !c.tagVlan) {
-        const vlan = c.endpoint === 'Left' ? inp.left.vlan : inp.right.vlan;
-        if (!/^\d+$/.test(String(vlan)) || Number(vlan) < 1 || Number(vlan) > 4094)
+        if (!mepVars.egVid)
           err('cfm.tagVlan', 'Provide a CFM outer VLAN from 1-4094 for this endpoint.');
       }
     }
@@ -428,7 +461,7 @@ function cfmBlock(inp, L, R) {
   else global.push(mdConfig);
   const target = p => `remote-mep-id ${c[`${p}RemoteMep`] || c.remoteMep}`;
   const session = p => cfmArgs(c, p, [`${p}Operation`, `${p}Version`]);
-  const vlan = c.tagVlan || (c.endpoint === 'Left' ? inp.left.vlan : inp.right.vlan);
+  const vlan = c.tagVlan || V.egVid;
   const outer = `tpid ${c.tagTpid} vlanid ${vlan}${c.tagPcp ? ` pcp ${c.tagPcp}` : ''}${c.tagDei ? ` dei ${c.tagDei}` : ''}`;
   // Both vtags must exist in the same edit: the YANG list requires exactly two.
   const tagLines = !c.tagged ? ['# unused when enable Tagged CFM (below) disabled']
@@ -480,20 +513,25 @@ export function generate(raw = {}) {
     : 'classifiers classifier CLASSIFIER_4097 filter-entry classifier:vtag-stack any vtags 1', ['classifier'], 'Classifier matching any tagged frame.'));
   config.push(line('C16', (l.l2cp || r.l2cp) ? 'classifiers classifier CLASSIFIER_L2cp filter-entry classifier:vtag-stack l2cp-exclude-priority-tagged false'
     : '# left blank, b/c L2CP not enabled (below)', ['classifier'], 'Classifier matching Layer 2 control protocols.'));
-  config.push(line('C17', (eq(l.vlan, r.vlan) || r.untagged || r.allTags || l.untagged || l.allTags)
-    ? "# left blank, b/c 'Left' and 'Right' VLANs match or using Untagged/AllTags"
-    : `classifiers classifier CLASSIFIER_${l.vlan} filter-entry classifier:vtag-stack vtags 1 vlan-id ${l.vlan}`, ['classifier', 'classifier-left'], 'Left VLAN classifier.'));
-  config.push(line('C18', ((l.untagged && r.untagged) || (l.allTags && r.allTags)) ? '# left blank, b/c using UNI-to-UNI Untagged/AllTags'
-    : `classifiers classifier CLASSIFIER_${r.vlan} filter-entry classifier:vtag-stack vtags 1 vlan-id ${r.vlan}`, ['classifier', 'classifier-right'], 'Right VLAN classifier.'));
+  const vlanClassifiers = (id, side, ranges, shared = []) => ranges.length ? ranges.map((range, i) => line(
+    i === 0 ? id : `${id}-${i + 1}`,
+    `classifiers classifier ${classifierName(range)} filter-entry classifier:vtag-stack vtags 1 vlan-id ${range.min}`
+      + (range.max === range.min ? '' : ` vlan-id-max ${range.max}`),
+    ['classifier', `classifier-${side}`, ...(shared.includes(classifierName(range)) ? ['classifier-left'] : [])],
+    `${side === 'left' ? 'Left' : 'Right'} VLAN classifier.`,
+  )) : [line(id, '# left blank, b/c no additional VLAN classifiers are needed')];
+  config.push(...vlanClassifiers('C17', 'left', classified(l)
+    ? L.ranges.filter(range => !R.classifiers.includes(classifierName(range))) : []));
+  config.push(...vlanClassifiers('C18', 'right', classified(r) ? R.ranges : [], L.classifiers));
   config.push(line('C19', `fds fd ${fd} description ${inp.serviceName} mode ${inp.serviceType === 'ELAN' ? 'vpls' : 'vpws'}`
     + ((l.l2cp || r.l2cp) ? ` l2cp-profile ${inp.l2cpProfile}` : '')
     + (is392 ? ` vlan-id ${inp.fdSvlan}` : '')
     + ((disabled(l.pfg) && disabled(r.pfg)) ? '' : ' pfg-profile default-pfg-profile'), ['fd'], 'Forwarding domain: the virtual switch (VPLS) or point-to-point (VPWS) instance.'));
-  config.push(line('C20', `fps fp ${L.fp} fd-name ${fd} logical-port ${L.lp} classifier-list-precedence 100 stats-collection on classifier-list${classifierList(l)}`,
+  config.push(line('C20', `fps fp ${L.fp} fd-name ${fd} logical-port ${L.lp} classifier-list-precedence 100 stats-collection on classifier-list ${L.classifiers.join(' ')}`,
     ['fp-left', 'classifier-left', 'port-left', 'fd'], 'Left flow point: binds the logical port + classifier to the FD.'));
   config.push(...transformLines(inp, L, 'left'));
   config.push(extrasLine(inp, l, L, 'left'));
-  config.push(line('C24', `fps fp ${R.fp} fd-name ${fd} logical-port ${R.lp} classifier-list-precedence 100 stats-collection on classifier-list${classifierList(r)}`,
+  config.push(line('C24', `fps fp ${R.fp} fd-name ${fd} logical-port ${R.lp} classifier-list-precedence 100 stats-collection on classifier-list ${R.classifiers.join(' ')}`,
     ['fp-right', 'classifier-right', 'port-right', 'fd'], 'Right flow point: binds the logical port + classifier to the FD.'));
   config.push(...transformLines(inp, R, 'right'));
   config.push(extrasLine(inp, r, R, 'right'));
@@ -522,7 +560,7 @@ export function generate(raw = {}) {
     fixedCos: { left: fixedCosBlock(inp, 'left'), right: fixedCosBlock(inp, 'right') },
     diagram: diagram(inp, L, R),
     soam: soamTrail(inp, L, R),
-    warnings: warnings(inp),
+    warnings: warnings(inp, L, R),
   };
 }
 

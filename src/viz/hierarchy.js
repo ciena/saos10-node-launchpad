@@ -5,7 +5,7 @@ import { esc } from '../lib/util.js';
 
 const rows = sub => Array.isArray(sub) ? sub : [sub];
 const nodeWidth = (title, sub, minimum = 110) => Math.max(minimum, title.length * 6.5 + 20, ...rows(sub).map(text => text.length * 7.5 + 20));
-const nodeHeight = sub => 54 + (rows(sub).length - 1) * 18;
+const nodeHeight = sub => 54 + Math.max(0, rows(sub).length - 1) * 18;
 function node(obj, x, y, w, kind, title, sub, cmd) {
   return `<g data-obj="${obj}" class="onode k-${kind}"><rect x="${x}" y="${y}" width="${w}" height="${nodeHeight(sub)}" rx="8"/>
   <text x="${x + 10}" y="${y + 20}" class="o-kind">${esc(title)}</text>
@@ -15,7 +15,10 @@ const edge = (x1, y1, x2, y2) => `<path class="o-edge" d="M${x1},${y1} C${x1},${
 
 export function hierarchySvg(out) {
   const v = out.vars, i = out.input;
-  const cls = s => { const x = i[s]; return [x.allTags && 'CLASSIFIER_4097', x.untagged && 'CLASSIFIER_4096', !x.allTags && !x.untagged && `CLASSIFIER_${x.vlan}`, x.l2cp && 'CLASSIFIER_L2cp'].filter(Boolean); };
+  const cls = s => {
+    const names = v[s].classifiers;
+    return names.length > 10 ? [...names.slice(0, 10), `+ ${names.length - 10} more`] : names;
+  };
   const xf = (s, d) => {
     const o = v[s][d === 'in' ? 'inOp' : 'egOp'];
     return o === 'no-op' ? 'no-op' : v[s][d === 'in' ? 'inName' : 'egName']
