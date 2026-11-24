@@ -481,7 +481,7 @@ export function Changelog() {
     <PageHead eyebrow="EXPLORE / CHANGELOG" title="What changed."
       description={`You are viewing v${__APP_VERSION__}. Build changes ship with this HTML; personal entry activity stays in this browser.`} />
     <Panel title="Your cheatsheet additions" className="mb-5"
-      description="Timestamp and first five lines of the saved command and note. Newest first; retained even if the entry is later deleted. Imports and pre-existing entries are not backfilled. This history is not shared with other users or included in Download HTML.">
+      description="Timestamp and first five lines of the saved command and note. Newest first; retained even if the entry is later deleted. Imports and pre-existing entries are not backfilled. This history is not shared with other users or included in the standalone HTML.">
       {!changes.length && <p className="entry-note">No additions recorded yet. Use Add entry on the CLI cheatsheet to start your activity history.</p>}
       <div className="grid gap-5">{changes.map(change => <article key={change.id} className="cheatsheet-change">
         <p className="mb-2"><strong>Cheatsheet entry added</strong> - <time dateTime={change.timestamp}>{change.timestamp}</time></p>
@@ -647,11 +647,6 @@ export function Cheatsheet({ sectionId }: { sectionId?: string | null }) {
       <label className="search-field flex-1 min-w-48"><Search size={16} /><input value={query} type="search" aria-label="Search commands and notes" placeholder="Search commands and notes... e.g. lldp, cfm, ping" onChange={e => setQuery(e.target.value)} /></label>
       <button className="button" onClick={() => downloadFile('cheatsheet-my-entries.json', JSON.stringify(entries, null, 2), 'application/json')}><Download size={14} />Export</button>
       <button className="button" aria-label="Import entries" disabled={importing} onClick={() => file.current?.click()}><Upload size={14} />{importing ? 'Importing...' : 'Import'}</button>
-      <button className="button" title="Review your entries in a public GitHub issue before submitting. Do not include secrets or customer data." onClick={() => {
-        if (!entries.length) { notify('Add an entry first'); return; }
-        const md = entries.map(entry => `### ${entry.section}\n\n\`\`\`cli\n${entry.command}\n\`\`\`\n${entry.note}`).join('\n\n');
-        window.open(`https://github.com/ciena/saos10-node-launchpad/issues/new?title=${encodeURIComponent('Cheatsheet: proposed entries')}&body=${encodeURIComponent(md)}`, '_blank', 'noopener,noreferrer');
-      }}>Add tip to GitHub</button>
       <input ref={file} hidden type="file" accept=".json,application/json" aria-label="Import cheatsheet JSON" onChange={e => { const selected = e.target.files?.[0]; if (selected) void importFile(selected); e.target.value = ''; }} />
     </div>
     <div className="cheatsheet-topics">

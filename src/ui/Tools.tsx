@@ -151,7 +151,11 @@ const satAdvanced: ToolField<SatInput>[] = [
   { key: 'emixSequence', label: 'Ethernet mix profile', options: [
     'y1564', 'y1564-v6', 'y1564-qinq-v4', 'y1564-qinq-v6', 'simple', 'simple-v6',
     'simple-qinq-v4', 'simple-qinq-v6', 'firewall', 'tcp', 'ipv6', 'ipv6-qinq',
+    'Custom',
   ] },
+  { key: 'customFrameMix', label: 'Frame Size Mix', render: (input, onChange) => <FrameMixField input={input} onChange={onChange} /> },
+  { key: 'customEmixSize', label: 'Custom u frame size (bytes)', hint: 'The u character uses this size, subject to the generator h-frame size and platform limits.' },
+  { key: 'generatorHFrameSize', label: 'Generator h frame size (bytes)', hint: 'Leave blank to use the port default. Check platform and path MTU limits, including encapsulation.' },
   { key: 'customPayload', label: 'Custom payload', hint: 'Example text is encoded as binary in the generated CLI.' },
   { key: 'resultMode', label: 'Throughput bandwidth calculation mode', options: ['payload', 'transport'],
     hint: 'Payload uses L2 frame length; transport uses L1 frame length.' },
@@ -179,7 +183,45 @@ const satAdvanced: ToolField<SatInput>[] = [
 ];
 
 const satOutageRateField: ToolField<SatInput> = {
-  key: 'outageBandwidth', label: 'Outage test rate (Mbps)', hint: 'Example: 1 Mbps with 64-byte frames.',
+  key: 'outageBandwidth', label: 'Outage test rate (Mbps)',
+};
+
+function FrameMixField({ input, onChange }: { input: SatInput; onChange: (input: SatInput) => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const node = dialog.current;
+    return () => node?.close();
+  }, []);
+  const custom = input.emixSequence === 'Custom';
+  return <>
+    <label className="field-label" htmlFor="customFrameMix">Frame Size Mix{' '}
+      <button type="button" className="text-action" aria-label="Frame Size Mix help" aria-haspopup="dialog"
+        onClick={() => dialog.current?.showModal()}><CircleHelp size={15} aria-hidden="true" /></button>
+    </label>
+    <input id="customFrameMix" type="text" readOnly={!custom} spellCheck={false}
+      value={custom ? input.customFrameMix : Sat.emixPattern(input.emixSequence)}
+      onChange={event => onChange({ ...input, customFrameMix: event.target.value })} />
+    <dialog ref={dialog} className="sat-test-help-dialog" aria-labelledby="sat-emix-help-title">
+      <h2 id="sat-emix-help-title">Frame Size Mix</h2>
+      <p className="mt-4">To edit this field, set "Ethernet mix profile" to "custom".</p>
+      <p className="mt-4">Each lowercase letter sends one frame; the sequence repeats throughout the test.</p>
+      <p className="mt-4">a = 64, b = 128, c = 256, d = 512, e = 1024, f = 1280, g = 1518 bytes;
+        v = 84, w = 68, x = 88 bytes; h = generator h-frame size; u = custom frame size.</p>
+      <p className="mt-4">For jumbo frames, include u in a custom mix and set Custom u frame size.
+        For example, bbduug with u = 9000 includes two 9000-byte frames per sequence.
+        All u characters in a mix use the same size.</p>
+      <p className="mt-4">When the mix contains h, set its size in Generator h frame size, or leave
+        that field blank to use the port default.</p>
+      <p className="mt-4">The u size is limited by h. Check encapsulation and platform limits: some platforms allow
+        at most 16 frames per mix, while others allow 32 and at most eight distinct letters. Ensure the path MTU
+        accommodates the frame and any added encapsulation.</p>
+      <form method="dialog" className="mt-5"><button className="button primary">Close</button></form>
+    </dialog>
+  </>;
+}
+const satOutageFrameField: ToolField<SatInput> = {
+  key: 'outageFrameSize', label: 'Outage frame size (bytes)',
+  hint: 'Enter one frame size.',
 };
 
 const migrateSatSettings = (value: unknown) => {
@@ -359,15 +401,18 @@ export function SatBuilder() {
     </> };
     return field;
   });
-  const outageRateField = input.benchmarkType === 'outage'
-    ? satOutageRateField : undefined;
+  const outageFields = input.benchmarkType === 'outage' ? [satOutageRateField, satOutageFrameField] : [];
   const advancedFields = satAdvanced.filter(field => {
     if (input.generatorPlatform !== 'SAOS10') return ['generatorIp', 'reflectorIp', 'maxSearches', 'pcp'].includes(field.key);
     if (field.key === 'pcp') return false;
     if (field.key === 'maxSearches') return input.benchmarkType === 'standard';
     if (field.key === 'sVlan') return input.encapType === 'qinq';
     if (field.key === 'priorityCodePoints') return input.encapType !== 'untagged';
-    if (field.key === 'satMaxSearches' || field.key === 'emixSequence') return input.benchmarkType === 'y1564';
+    if (field.key === 'satMaxSearches' || field.key === 'emixSequence' || field.key === 'customFrameMix') return input.benchmarkType === 'y1564';
+    if (field.key === 'customEmixSize') return input.benchmarkType === 'y1564'
+      && input.emixSequence === 'Custom' && input.customFrameMix.includes('u');
+    if (field.key === 'generatorHFrameSize') return input.benchmarkType === 'y1564'
+      && input.emixSequence === 'Custom' && input.customFrameMix.includes('h');
     if (field.key === 'maxSamples' || field.key === 'samplingInterval' || field.key === 'excessBandwidth') return input.benchmarkType !== 'outage';
     if (field.key === 'customDuration') return input.duration === 'Custom' && input.benchmarkType !== 'outage';
     if (field.key === 'reflectionLevel') return input.reflectorPlatform === 'SAOS10';
@@ -389,9 +434,9 @@ export function SatBuilder() {
     `# Remove Generator - ${input.generatorPlatform}`, ...out.generatorRemove,
     `# Remove Reflector - ${input.reflectorPlatform}`, ...out.reflectorRemove,
   ].join('\n');
-  const blocks = (action: string, generator: string[], reflector: string[]) => <>
-    <CodeBlock title={`${action} Generator - ${input.generatorPlatform}`} lines={generator} />
-    <CodeBlock title={`${action} Reflector - ${input.reflectorPlatform}`} lines={reflector} />
+  const blocks = (action: string, generator: string[], reflector: string[], individualCopy = false) => <>
+    <CodeBlock title={`${action} Generator - ${input.generatorPlatform}`} lines={generator} individualCopy={individualCopy} />
+    <CodeBlock title={`${action} Reflector - ${input.reflectorPlatform}`} lines={reflector} individualCopy={individualCopy} />
   </>;
   const review = (endpoint: 'generator' | 'reflector') => {
     const isGenerator = endpoint === 'generator';
@@ -407,7 +452,7 @@ export function SatBuilder() {
       actions={<><button className="button" onClick={() => void shareSettings('sat', input)}><Share2 size={14} />Share settings</button><Segments label="Detail level" options={modeOptions} value={mode} onChange={setDetailLevel} /><ResetButton onReset={() => setInput(Sat.defaults())} /></>} />
     <div className="builder-layout sat-layout sat-layout-side-by-side"><div className="builder-form">
       <Panel title="Traffic & test profile" className="sat-traffic">
-        <FormFields input={input} fields={[...trafficFields, ...(outageRateField ? [outageRateField] : [])]} onChange={updateInput} />
+        <FormFields input={input} fields={[...trafficFields, ...outageFields]} onChange={updateInput} />
         <SatTestTypes input={input} mode={mode} onChange={setInput} />
         {input.benchmarkType === 'outage' && <div className="issue-error mt-5" role="alert">
           <strong>Outage does not stop automatically.</strong>
@@ -435,12 +480,12 @@ export function SatBuilder() {
           <CodeBlock title={`Configure Reflector - ${input.reflectorPlatform}`} lines={out.reflectorConfig} />
         </> },
         { id: 'ops', label: 'Run & verify', content: <>
-          <CodeBlock title={`Activate Generator - ${input.generatorPlatform}`} lines={out.generatorOps.slice(0, activationCount)} />
+          <CodeBlock title={`Activate Generator - ${input.generatorPlatform}`} lines={out.generatorOps.slice(0, activationCount)} individualCopy />
           {input.benchmarkType === 'outage' ? <>
-            <CodeBlock title="Stop Outage manually before collecting statistics" lines={out.generatorOps.slice(activationCount, activationCount + 1)} />
-            <CommandCodeBlock title={`Post-test verification Generator - ${input.generatorPlatform}`} lines={out.generatorOps.slice(activationCount + 1)} />
-            <CodeBlock title={`Post-test verification Reflector - ${input.reflectorPlatform}`} lines={out.reflectorOps} />
-          </> : blocks('Validate', out.generatorOps.slice(activationCount), out.reflectorOps)}
+            <CodeBlock title="Stop Outage manually before collecting statistics" lines={out.generatorOps.slice(activationCount, activationCount + 1)} individualCopy />
+            <CommandCodeBlock title={`Post-test verification Generator - ${input.generatorPlatform}`} lines={out.generatorOps.slice(activationCount + 1)} individualCopy />
+            <CodeBlock title={`Post-test verification Reflector - ${input.reflectorPlatform}`} lines={out.reflectorOps} individualCopy />
+          </> : blocks('Validate', out.generatorOps.slice(activationCount), out.reflectorOps, true)}
         </> },
         { id: 'remove', label: 'Remove', content: <><p className="note">Capture statistics first. Removal disables global SAT/benchmark operation and removes a reusable KPI profile. Check other tests and profile users before applying.</p>{blocks('Remove', out.generatorRemove, out.reflectorRemove)}</> },
       ]} />

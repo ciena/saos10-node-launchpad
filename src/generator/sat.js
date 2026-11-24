@@ -1,6 +1,22 @@
 export const PLATFORMS = ['SAOS10', 'SAOS8', 'SAOS6'];
 export const TEST_TYPES = ['throughput', 'latency', 'pdv', 'frameloss'];
 export const BENCHMARK_TYPES = ['standard', 'rfc2544', 'y1564', 'outage'];
+export const EMIX_SEQUENCES = {
+  y1564: 'abceg',
+  'y1564-v6': 'vbceg',
+  'y1564-qinq-v4': 'wbceg',
+  'y1564-qinq-v6': 'xbceg',
+  simple: 'aaaaaaauuuugg',
+  'simple-v6': 'vvvvvvvuuuugg',
+  'simple-qinq-v4': 'wwwwwwwuuuugg',
+  'simple-qinq-v6': 'xxxxxxxuuuugg',
+  firewall: 'g',
+  tcp: 'bbbbbbbuuuugg',
+  ipv6: 'vvvvvvduuuugg',
+  'ipv6-qinq': 'xxxxxxduuuugg',
+};
+/** @param {string} name */
+export const emixPattern = name => Object.entries(EMIX_SEQUENCES).find(([key]) => key === name)?.[1] ?? '';
 const LEGACY_TEST_TYPES = ['throughput', 'latency', 'frameloss', 'pdv'];
 
 export const defaults = () => ({
@@ -20,6 +36,7 @@ export const defaults = () => ({
   customDuration: '15',
   bandwidth: '500',
   frameSizes: '64,128,9000',
+  outageFrameSize: '64',
   testTypes: [...TEST_TYPES],
   benchmarkType: 'standard',
   resultMode: 'transport',
@@ -46,6 +63,9 @@ export const defaults = () => ({
   customPayload: 'Ciena SAT payload',
   bwAllocProfile: '',
   emixSequence: 'y1564',
+  customFrameMix: 'abceg',
+  customEmixSize: '9000',
+  generatorHFrameSize: '',
   reflectionLevel: 'l2-to-l4',
   outageBandwidth: '1',
   pcp: '4',
@@ -119,6 +139,8 @@ function satGenerator(v) {
   const types = new Set(v.testTypes);
   const profile = `prof_${name}`;
   const instance = `sat_${name}`;
+  const customEmix = v.benchmarkType === 'y1564' && v.emixSequence === 'Custom';
+  const emixName = customEmix ? `emix_${name}` : v.emixSequence;
   const special = v.benchmarkType !== 'standard';
   const encap = vlan === 0 ? 'untagged' : v.encapType;
   const pcpValues = [...v.priorityCodePoints];
@@ -174,12 +196,12 @@ function satGenerator(v) {
     ].join(' ');
     const optionalSettings = [
       v.bwAllocProfile && `bw-alloc-profile ${v.bwAllocProfile}`,
-      v.benchmarkType === 'y1564' && `emix-sequence ${v.emixSequence}`,
+      v.benchmarkType === 'y1564' && `emix-sequence ${emixName}`,
       v.customPayload && `custom-payload ${encodePayload(v.customPayload)}`,
       v.duration === 'Custom' && v.benchmarkType !== 'outage' && `custom-duration ${v.customDuration}`,
     ].filter(Boolean).join(' ');
     const frameSizes = v.benchmarkType === 'standard' ? `frame-size ${v.frameSizes.split(',').join(' ')}`
-      : v.benchmarkType === 'outage' ? 'frame-size 64' : '';
+      : v.benchmarkType === 'outage' ? `frame-size ${v.outageFrameSize}` : '';
     const searches = v.benchmarkType === 'rfc2544' ? '7'
       : v.benchmarkType === 'standard' ? v.maxSearches : v.satMaxSearches;
     const testFlags = special ? specialFlags[v.benchmarkType] : flags;
@@ -217,8 +239,9 @@ function satGenerator(v) {
     'config',
     'sat sat-global admin-state enabled',
     ...kpiLines,
+    ...(customEmix ? [`sat emix-sequence ${emixName} sequence ${v.customFrameMix}${v.customFrameMix.includes('u') ? ` u-frame-size ${v.customEmixSize}` : ''}`] : []),
     `sat test-profile ${profile} ${profileSettings}`,
-    `sat entity ${instance} port ${v.generatorPort} role generator mode ${v.mode} admin-state enabled`,
+    `sat entity ${instance} port ${v.generatorPort} role generator mode ${v.mode} admin-state enabled${customEmix && v.customFrameMix.includes('h') && v.generatorHFrameSize !== '' ? ` generator-h-frame-size ${v.generatorHFrameSize}` : ''}`,
     `sat test-instance ${name} flow-point-id ${v.generatorFlowPoint} profile ${profile} ${instanceTags} admin-state enabled`,
     'exit',
   ];
@@ -248,6 +271,7 @@ function generatorRemoval(v, platform) {
     `sat entity sat_${v.name} admin-state disabled`,
     `no sat entity sat_${v.name}`,
     `no sat test-profile prof_${v.name}`,
+    ...(v.benchmarkType === 'y1564' && v.emixSequence === 'Custom' ? [`no sat emix-sequence emix_${v.name}`] : []),
     `no sat kpi-profile "${v.kpiProfileName}"`, 'exit',
   ];
   const p = platform.toLowerCase();
@@ -324,6 +348,9 @@ export function generate(input = {}) {
   if (v.benchmarkType === 'standard' && (!sizes.length || sizes.length > 10 || sizes.some(s => !validInt(s, 64, maxFrameSize)))) {
     errors.push(`Enter 1-10 comma-separated frame sizes between 64 and ${maxFrameSize} bytes.`);
   }
+  if (v.benchmarkType === 'outage' && !validInt(v.outageFrameSize, 64, maxFrameSize)) {
+    errors.push(`Enter one outage frame size between 64 and ${maxFrameSize} bytes.`);
+  }
   if (!BENCHMARK_TYPES.includes(v.benchmarkType)) errors.push('Select a supported SAT test type.');
   if (!Array.isArray(v.testTypes) || v.testTypes.some(t => !TEST_TYPES.includes(t))
     || (v.benchmarkType === 'standard' && !v.testTypes.length)) errors.push('Select at least one supported test type.');
@@ -362,6 +389,25 @@ export function generate(input = {}) {
   if (typeof v.customPayload !== 'string' || new TextEncoder().encode(v.customPayload).length > 256) errors.push('Custom payload must be text no longer than 256 UTF-8 bytes.');
   if (v.bwAllocProfile !== '' && !safeToken(v.bwAllocProfile)) errors.push('PCP bandwidth allocation profile name contains unsupported characters.');
   if (v.benchmarkType === 'y1564' && !safeToken(v.emixSequence)) errors.push('Y.1564 requires a valid configured Ethernet mix profile name.');
+  if (v.benchmarkType === 'y1564' && v.emixSequence === 'Custom') {
+    if (typeof v.customFrameMix !== 'string' || !/^[abcdefghvwxu]{1,32}$/.test(v.customFrameMix)) {
+      errors.push('Frame Size Mix must contain 1-32 lowercase EMIX letters: a-h, v, w, x or u.');
+    } else {
+      if (v.customFrameMix.length > 16) warnings.push('Sequences longer than 16 frames require a platform supporting 32-frame EMIX sequences.');
+      if (new Set(v.customFrameMix).size > 8) warnings.push('Some platforms support at most eight distinct EMIX characters.');
+      if (v.encapType === 'qinq' && v.customFrameMix.includes('a')) errors.push('The 64-byte a frame is not supported with QinQ.');
+      if (v.customFrameMix.includes('u') && !validInt(v.customEmixSize, 64, 9216)) errors.push('Custom u frame size must be an integer from 64 to 9216 bytes; verify platform and encapsulation limits.');
+      if (v.customFrameMix.includes('u') && v.encapType === 'qinq' && Number(v.customEmixSize) < 68) errors.push('QinQ requires a custom u frame size of at least 68 bytes.');
+      if (v.customFrameMix.includes('h') && v.generatorHFrameSize !== '') {
+        if (!validInt(v.generatorHFrameSize, 64, 9800)) {
+          errors.push('Generator h frame size must be an integer from 64 to 9800 bytes; verify platform and encapsulation limits.');
+        } else if (v.customFrameMix.includes('u') && validInt(v.customEmixSize, 64, 9216)
+          && Number(v.customEmixSize) > Number(v.generatorHFrameSize)) {
+          warnings.push('The custom u frame size exceeds h and will be limited to h.');
+        }
+      }
+    }
+  }
   if (!['l2-only', 'l2-to-l3-ipv4-only', 'l2-to-l3-ipv6-only', 'l2-to-l4-ipv4-only', 'l2-to-l4-ipv6-only', 'l2-to-l4'].includes(v.reflectionLevel)) {
     errors.push('Select a supported reflector reflection level.');
   }
