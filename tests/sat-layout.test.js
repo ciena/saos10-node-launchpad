@@ -28,7 +28,7 @@ for (const width of [390, 768, 1101, 1440]) {
             const expect = (condition, message) => { if (!condition) throw new Error(message); };
             const tick = () => new Promise(resolve => setTimeout(resolve, 50));
             const advancedOrder = ['kpiProfileName', 'customDuration', 'interval', 'framelossStartBandwidth',
-              'maxSearches', 'satMaxSearches', 'maxSamples', 'samplingInterval', 'excessBandwidth', 'emixSequence',
+              'maxSearches', 'satMaxSearches', 'maxSamples', 'samplingInterval', 'excessBandwidth', 'emixSequence', 'customFrameMix', 'customEmixSize', 'generatorHFrameSize',
               'customPayload', 'resultMode', 'pduType', 'tpid', 'encapType', 'sVlan', 'pcp', 'color',
               'priorityCodePoints', 'bwAllocProfile', 'dscp', 'generatorIp', 'reflectorIp', 'reflectionLevel', 'macValidation'];
             const checkAdvancedOrder = () => {
@@ -200,8 +200,65 @@ for (const width of [390, 768, 1101, 1440]) {
             platform.dispatchEvent(new Event('change', { bubbles: true })); await tick();
             document.getElementById('sat-test-rfc2544').click(); await tick();
             document.querySelector('[aria-label="Detail level"] [data-mode="advanced"]').click(); await tick();
+            document.getElementById('sat-test-y1564').click(); await tick();
+            const mixProfile = document.getElementById('emixSequence');
+            const mix = document.getElementById('customFrameMix');
+            expect(mix.readOnly && mix.value === 'abceg', 'Default predefined EMIX must be read-only');
+            mixProfile.value = 'ipv6-qinq'; mixProfile.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+            expect(mix.readOnly && mix.value === 'xxxxxxduuuugg', 'Predefined EMIX pattern did not update');
+            mixProfile.value = 'Custom'; mixProfile.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+            expect(!mix.readOnly && mix.value === 'abceg', 'Custom EMIX is not editable');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(mix, 'abuug');
+            mix.dispatchEvent(new Event('input', { bubbles: true })); await tick();
+            expect(document.getElementById('customEmixSize')?.value === '9000'
+              && document.querySelector('.builder-results').textContent.includes('sequence abuug u-frame-size 9000'),
+              'Custom mix or u frame size was not generated');
+            expect(!document.getElementById('generatorHFrameSize'), 'h size must be hidden when the mix has no h');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(mix, 'abuhg');
+            mix.dispatchEvent(new Event('input', { bubbles: true })); await tick();
+            const hSize = document.getElementById('generatorHFrameSize');
+            expect(hSize && hSize.value === '' && !document.querySelector('.builder-results').textContent.includes('generator-h-frame-size'),
+              'h size should be optional and default to the port value');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(hSize, '9200');
+            hSize.dispatchEvent(new Event('input', { bubbles: true })); await tick();
+            expect(document.querySelector('.builder-results').textContent.includes('generator-h-frame-size 9200'),
+              'h size did not update generator config');
+            document.querySelector('[aria-label="Frame Size Mix help"]').click(); await tick();
+            const mixHelp = document.querySelector('[aria-labelledby="sat-emix-help-title"]');
+            expect(mixHelp?.open && mixHelp.textContent.includes('u = custom frame size'), 'EMIX help did not open');
+            expect(mixHelp.querySelector('p')?.textContent === 'To edit this field, set "Ethernet mix profile" to "custom".',
+              'EMIX help must start with the custom profile instruction');
+            expect(mixHelp.textContent.includes('bbduug with u = 9000') && mixHelp.textContent.includes('path MTU'),
+              'EMIX help must explain jumbo sizes and MTU limits');
+            mixHelp.querySelector('form button').click(); await tick();
+            mixProfile.value = 'y1564'; mixProfile.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+            expect(mix.readOnly && mix.value === 'abceg' && !document.getElementById('generatorHFrameSize')
+              && !document.querySelector('.builder-results').textContent.includes('generator-h-frame-size'),
+              'Predefined mix did not restore read-only mode or hide h');
+            mixProfile.value = 'Custom'; mixProfile.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+            expect(mix.value === 'abuhg' && document.getElementById('generatorHFrameSize')?.value === '9200',
+              'Custom mix and h size were not preserved when switching profiles');
+            document.getElementById('sat-test-y1564').click(); await tick();
             expect(document.getElementById('sat-test-outage'), 'Outage is missing in Advanced mode');
             document.getElementById('sat-test-outage').click(); await tick();
+            const outageSize = document.getElementById('outageFrameSize');
+            expect(outageSize?.value === '64' && !document.getElementById('frameSizes'),
+              'Outage must expose one independently defaulted frame size');
+            expect(!document.querySelector('.sat-traffic').textContent.includes('Example: 1 Mbps with 64-byte frames.')
+              && !document.querySelector('.sat-traffic').textContent.includes('64 bytes is recommended for detecting brief interruptions'),
+              'Outage fields still display the removed hints');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(outageSize, '512');
+            outageSize.dispatchEvent(new Event('input', { bubbles: true })); await tick();
+            expect(document.querySelector('.builder-results').textContent.includes('frame-size 512')
+              && JSON.parse(localStorage.getItem('snl-sat-state')).outageFrameSize === '512',
+              'Outage frame size did not update the config and saved state');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(outageSize, '64,128');
+            outageSize.dispatchEvent(new Event('input', { bubbles: true })); await tick();
+            expect(document.querySelector('.issues').textContent.includes('one outage frame size')
+              && document.querySelector('.output-panel button').disabled,
+              'Outage accepts multiple frame sizes');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(outageSize, '512');
+            outageSize.dispatchEvent(new Event('input', { bubbles: true })); await tick();
             expect(!standardTypeIds.some(id => document.getElementById(id))
               && !document.getElementById('sat-test-rfc2544') && !document.getElementById('sat-test-y1564'),
               'Selecting Outage did not hide other test types');
@@ -223,6 +280,42 @@ for (const width of [390, 768, 1101, 1440]) {
               && outageStatistics[1].textContent.includes('show sat test-instances')
               && outageStatistics[1].textContent.endsWith(' statistics'),
               'Outage statistics guidance must immediately precede the command after manual stop');
+            {
+              const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+              const originalExec = document.execCommand;
+              let copied;
+              Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copied = text; } } });
+              document.execCommand = action => {
+                if (action !== 'copy') return false;
+                copied = document.querySelector('textarea[style*="position"]').value;
+                return true;
+              };
+              try {
+                for (const block of outageBlocks) {
+                  const commands = [...block.querySelectorAll('.code-line')].filter(line => {
+                    const text = line.querySelector('code').textContent.trim();
+                    return text && !text.startsWith('#');
+                  });
+                  const buttons = block.querySelectorAll('.command-line-copy');
+                  const headingCopy = block.querySelector('.code-heading button');
+                  expect(buttons.length === (commands.length > 1 ? commands.length : 0),
+                    'Run & verify must offer a per-command copy only for multi-command sections');
+                  expect(headingCopy.textContent.trim() === (commands.length > 1 ? 'Copy All' : 'Copy'),
+                    'Incorrect section copy label');
+                  for (const line of commands.filter(() => commands.length > 1)) {
+                    line.querySelector('.command-line-copy').click(); await tick();
+                    expect(copied === line.querySelector('code').textContent, 'Individual copy included another command or annotation');
+                  }
+                  headingCopy.click(); await tick();
+                  expect(copied === [...block.querySelectorAll('.code-line code')].map(code => code.textContent).join('\\n'),
+                    'Copy All did not preserve the subsection and comments');
+                }
+              } finally {
+                if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+                else delete navigator.clipboard;
+                document.execCommand = originalExec;
+              }
+            }
             let outageDownload;
             const createOutageUrl = URL.createObjectURL;
             const clickOutageAnchor = HTMLAnchorElement.prototype.click;

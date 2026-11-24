@@ -102,15 +102,8 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             && document.title.endsWith('SAOS10 Node Launchpad')
             && !/[·←→▶◀❚]/u.test(document.title),
             'New product branding is incomplete');
-          const downloadLink = document.querySelector('.download-html');
-          expect(downloadLink.getAttribute('download').startsWith('saos10-node-launchpad-v'),
-            'Standalone download filename does not use the new brand');
-          expect(downloadLink.title === 'Download standalone HTML', 'Standalone download tooltip is missing');
-          const projectLink = document.querySelector('.download-html + a');
-          expect(projectLink?.getAttribute('aria-label') === 'GitHub project' && projectLink.querySelector('svg.lucide-github')
-            && projectLink.href === 'https://github.com/ciena/saos10-node-launchpad'
-            && projectLink.target === '_blank' && projectLink.relList.contains('noopener'),
-            'The header must link to the public GitHub project immediately after Download HTML');
+          expect(!document.querySelector('.download-html, .github-project, [aria-label="GitHub project"]'),
+            'Removed header actions are still present');
           expect(document.documentElement.dataset.theme === 'dark' && localStorage.getItem('snl-theme') === 'dark',
             'Legacy theme preference was not migrated');
           localStorage.setItem('tbf-cheatsheet-changelog', JSON.stringify([
@@ -177,8 +170,6 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           expect(document.querySelector('[data-overview="expert"]'), 'Overview design did not persist across navigation');
           expect(document.querySelector('.brand img').complete && document.querySelector('.brand img').naturalWidth > 0,
             'Offline brand image is missing');
-          expect(document.querySelector('.download-html').href.split('#')[0] === location.href.split('#')[0],
-            'Offline download does not reference this HTML file');
           document.querySelector('[aria-label="Page settings"]').click(); await tick();
           const settings = document.querySelector('.settings-dialog');
           expect(settings.matches(':modal'), 'Settings gear did not open a modal');
@@ -217,17 +208,6 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             nativeInput(settings.querySelector('[aria-label="Text size"]'), String(size)); await tick();
             expect(parseFloat(getComputedStyle(document.body).fontSize) > initialFontSize, 'Text-size slider did not enlarge fonts immediately');
           }
-          const projectBackgrounds = new Set();
-          const colorSample = document.createElement('canvas').getContext('2d');
-          const rgb = color => {
-            colorSample.fillStyle = color;
-            colorSample.fillRect(0, 0, 1, 1);
-            return [...colorSample.getImageData(0, 0, 1, 1).data].slice(0, 3);
-          };
-          const luminance = color => rgb(color).map(channel => {
-            const s = channel / 255;
-            return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-          }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
           for (const palette of ['ciena', 'ocean', 'orchid']) {
             await changeSelect('Color scheme', palette);
             expect(document.documentElement.dataset.palette === palette, 'Palette did not apply immediately');
@@ -237,20 +217,9 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
               expect(document.documentElement.dataset.theme === theme, 'Theme did not apply immediately');
               expect(getComputedStyle(settings).backgroundColor === getComputedStyle(document.querySelector('.overview-directory-item')).backgroundColor,
                 'Settings panel does not follow appearance colors');
-              const { backgroundColor, color } = getComputedStyle(projectLink);
-              const bg = luminance(backgroundColor), fg = luminance(color);
-              expect((Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05) >= 3,
-                'GitHub icon lacks contrast in ' + palette + ' ' + theme);
-              for (const selector of ['.app-header', '.download-html']) {
-                const other = rgb(getComputedStyle(document.querySelector(selector)).backgroundColor);
-                expect(rgb(backgroundColor).some((channel, i) => Math.abs(channel - other[i]) >= 30),
-                  'GitHub button background blends into ' + selector + ' in ' + palette + ' ' + theme);
-              }
-              projectBackgrounds.add(backgroundColor);
               await checkOverview();
             }
           }
-          expect(projectBackgrounds.size === 6, 'The GitHub button background did not update across themes and palettes');
           await changeSelect('Reading font', 'opendyslexic');
           await document.fonts.load('16px OpenDyslexic');
           expect(document.fonts.check('16px OpenDyslexic') && getComputedStyle(document.querySelector('h1')).fontFamily.includes('OpenDyslexic'),
@@ -1538,18 +1507,8 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
             else delete navigator.clipboard;
             document.execCommand = originalExecCommand;
           }
-          const tipButton = () => [...document.querySelectorAll('button')].find(button => button.textContent === 'Add tip to GitHub');
-          expect(tipButton() && ![...document.querySelectorAll('button')].some(button => /Download suggestions/i.test(button.textContent)),
-            'Public cheatsheet must offer GitHub tips instead of suggestion downloads');
-          const originalOpen = window.open;
-          const tipWindows = [];
-          try {
-            window.open = (...args) => { tipWindows.push(args); return null; };
-            const before = notifications.length;
-            tipButton().click(); await tick();
-            expect(!tipWindows.length && notifications.slice(before).includes('Add an entry first'),
-              'Submitting an empty cheatsheet must prompt for an entry without opening GitHub');
-          } finally { window.open = originalOpen; }
+          expect(![...document.querySelectorAll('button')].some(button => /add tip to github/i.test(button.textContent)),
+            'Removed GitHub tip submission action is still present');
           [...document.querySelectorAll('button')].find(button => button.textContent === 'Add entry').click(); await tick();
           nativeInput(document.querySelector('.entry-form textarea'), 'show browser-smoke');
           nativeInput(document.querySelector('.entry-form input'), 'Browser field note'); await tick();
@@ -1563,20 +1522,6 @@ test(`Offline React flows, saved drafts and visualizations at ${width}px`, { ski
           expect(firstNumber === numbered.length + 1, 'Add entry did not assign the next section number');
           expect(document.getElementById('my-entries').querySelector('h2').textContent.includes('My entries'), 'Personal section group missing');
           expect(document.querySelector('#my-entries .field-note-heading h3').textContent.startsWith('#' + firstNumber), 'Personal entry number missing');
-          try {
-            window.open = (...args) => { tipWindows.push(args); return null; };
-            tipButton().click(); await tick();
-            expect(tipWindows.length === 1, 'Tip submission did not open exactly one GitHub draft');
-            const [href, target, features] = tipWindows[0];
-            const issue = new URL(href);
-            expect(issue.origin === 'https://github.com' && issue.pathname === '/ciena/saos10-node-launchpad/issues/new',
-              'Tip submission does not target the public repository');
-            const entries = JSON.parse(localStorage.getItem('snl-cheatsheet-user'));
-            const expected = entries.map(entry => '### ' + entry.section + '\\n\\n' + String.fromCharCode(96).repeat(3) + 'cli\\n' + entry.command + '\\n' + String.fromCharCode(96).repeat(3) + '\\n' + entry.note).join('\\n\\n');
-            expect(issue.searchParams.get('title') === 'Cheatsheet: proposed entries' && issue.searchParams.get('body') === expected,
-              'Tip issue draft did not preserve the saved commands and notes');
-            expect(target === '_blank' && features === 'noopener,noreferrer', 'Tip draft window is missing isolation');
-          } finally { window.open = originalOpen; }
           const activity = JSON.parse(localStorage.getItem('snl-cheatsheet-changelog-v0.8.14'));
           expect(activity.length === 1 && activity[0].preview === 'show browser-smoke\\nBrowser field note', 'Entry activity snapshot missing');
           expect(!Number.isNaN(Date.parse(activity[0].timestamp)) && activity[0].timestamp.includes('T'), 'Activity timestamp is not full ISO date-time');

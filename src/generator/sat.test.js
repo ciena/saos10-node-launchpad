@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generate, defaults } from './sat.js';
+import { generate, defaults, emixPattern } from './sat.js';
 
 const sampleNames = { generatorFlowPoint: '6_evpl-ImOn-v1337_1', reflectorFlowPoint: '6_evpl-ImOn-v1337_1' };
 
@@ -94,6 +94,50 @@ test('RFC2544 and Y.1564 suites emit their suite flags and profile parameters', 
   assert.match(y1564Profile, /custom-payload Q2llbmEgU0FUIHBheWxvYWQ=/);
 });
 
+test('custom Y.1564 EMIX is created before use and removed after the profile', () => {
+  const out = generate({ name: 'test-mix', benchmarkType: 'y1564', emixSequence: 'Custom',
+    customFrameMix: 'aaubg', customEmixSize: '9000' });
+  assert.deepEqual(out.errors, []);
+  const create = 'sat emix-sequence emix_test-mix sequence aaubg u-frame-size 9000';
+  assert.ok(out.generatorConfig.includes(create));
+  assert.ok(out.generatorConfig.findIndex(line => line === create) <
+    out.generatorConfig.findIndex(line => line.startsWith('sat test-profile ')));
+  assert.match(out.generatorConfig.find(line => line.startsWith('sat test-profile ')), /emix-sequence emix_test-mix/);
+  assert.ok(out.generatorRemove.indexOf('no sat test-profile prof_test-mix') <
+    out.generatorRemove.indexOf('no sat emix-sequence emix_test-mix'));
+  assert.equal(emixPattern('y1564'), 'abceg');
+  assert.equal(emixPattern('ipv6-qinq'), 'xxxxxxduuuugg');
+  assert.equal(emixPattern('ipv6'), 'vvvvvvduuuugg');
+});
+
+test('custom EMIX rejects unsafe patterns and invalid custom frame sizes', () => {
+  const custom = { benchmarkType: 'y1564', emixSequence: 'Custom' };
+  for (const customFrameMix of ['', 'abc;config', 'A', 'a'.repeat(33)]) {
+    assert.ok(generate({ ...custom, customFrameMix }).errors.some(error => error.includes('Frame Size Mix')));
+  }
+  for (const customEmixSize of ['63', '9217', '700,800']) {
+    assert.ok(generate({ ...custom, customFrameMix: 'au', customEmixSize }).errors.some(error => error.includes('Custom u')));
+  }
+  assert.ok(generate({ ...custom, encapType: 'qinq', customFrameMix: 'au', customEmixSize: '64' }).errors.length >= 2);
+  assert.ok(generate({ ...custom, customFrameMix: 'a'.repeat(17) }).warnings.some(w => w.includes('longer than 16')));
+  assert.ok(generate({ ...custom, customFrameMix: 'abcdefghu' }).warnings.some(w => w.includes('eight distinct')));
+});
+
+test('custom EMIX h size is optional, validated and limited to mixes using h', () => {
+  const custom = { benchmarkType: 'y1564', emixSequence: 'Custom', customFrameMix: 'auhg', customEmixSize: '9000' };
+  const entity = out => out.generatorConfig.find(line => line.startsWith('sat entity '));
+  assert.doesNotMatch(entity(generate(custom)), /generator-h-frame-size/);
+  const configured = generate({ ...custom, generatorHFrameSize: '9200' });
+  assert.deepEqual(configured.errors, []);
+  assert.match(entity(configured), /generator-h-frame-size 9200/);
+  assert.ok(generate({ ...custom, generatorHFrameSize: '1500' }).warnings.some(w => w.includes('exceeds h')));
+  for (const generatorHFrameSize of ['63', '9801', 'a', '1;config']) {
+    assert.ok(generate({ ...custom, generatorHFrameSize }).errors.some(e => e.includes('Generator h frame size')));
+  }
+  assert.doesNotMatch(entity(generate({ ...custom, customFrameMix: 'aug', generatorHFrameSize: '9200' })), /generator-h-frame-size/);
+  assert.doesNotMatch(entity(generate({ ...custom, emixSequence: 'y1564', generatorHFrameSize: '9200' })), /generator-h-frame-size/);
+});
+
 test('extended SAT settings preserve standard searches and custom duration without bounding Outage', () => {
   const standard = generate({ duration: 'Custom', customDuration: '30', maxSearches: '3' });
   assert.deepEqual(standard.errors, []);
@@ -138,6 +182,18 @@ test('Outage is indefinite, low-rate by default, and explicitly manually stopped
   assert.ok(out.warnings.some(warning => warning.includes('supported only on 3922, 3924, 3926')));
   assert.ok(out.warnings.every(warning => !warning.includes('two-node 3926 test') && !warning.includes('CN3984')));
   assert.ok(out.generatorOps.some(command => command.startsWith('sat stop ')));
+});
+
+test('Outage accepts one independent frame size and rejects malformed or out-of-range values', () => {
+  const out = generate({ benchmarkType: 'outage', outageFrameSize: '512', frameSizes: '64,128,9000' });
+  assert.deepEqual(out.errors, []);
+  assert.match(out.generatorConfig.find(line => line.startsWith('sat test-profile ')), /frame-size 512$/);
+  for (const outageFrameSize of ['', '63', '16001', '64,128', '64\nconfig save', '64.5']) {
+    const invalid = generate({ benchmarkType: 'outage', outageFrameSize });
+    assert.ok(invalid.errors.some(error => error.includes('one outage frame size')));
+    assert.deepEqual(invalid.generatorConfig, []);
+  }
+  assert.deepEqual(generate({ benchmarkType: 'standard', outageFrameSize: '' }).errors, []);
 });
 
 test('only Outage places its statistics comment and command after manual stop', () => {

@@ -125,19 +125,26 @@ export function Issues({ errors = [], warnings = [] }: { errors?: string[]; warn
   </div>;
 }
 
-export function CodeBlock({ title, lines, onFocus, highlighted = [] }: {
+export function CodeBlock({ title, lines, onFocus, highlighted = [], individualCopy = false }: {
   title: string; lines: readonly (string | { text: string; objects?: string[]; explain?: string })[];
-  onFocus?: (objects: string[]) => void; highlighted?: string[];
+  onFocus?: (objects: string[]) => void; highlighted?: string[]; individualCopy?: boolean;
 }) {
   const text = lines.map(line => typeof line === 'string' ? line : line.text).join('\n');
+  const multipleCommands = individualCopy && lines.filter(line => {
+    const value = typeof line === 'string' ? line : line.text;
+    return value.trim() && !value.trimStart().startsWith('#');
+  }).length > 1;
   return <div className="code-block">
     <div className="code-heading"><span>{title}</span><button className="code-copy" type="button"
-      onClick={() => void copyText(text)} aria-label={`Copy ${title}`}><Copy size={14} /> Copy</button></div>
+      onClick={() => void copyText(text)} aria-label={`${multipleCommands ? 'Copy all' : 'Copy'} ${title}`}><Copy size={14} /> {multipleCommands ? 'Copy All' : 'Copy'}</button></div>
     <pre>{lines.length ? lines.map((line, i) => {
       const data = typeof line === 'string' ? { text: line } : line;
       return <span key={i} className={`code-line ${data.text.startsWith('#') ? 'is-comment' : ''} ${data.objects?.some(o => highlighted.includes(o)) ? 'is-highlighted' : ''}`}
         title={data.explain} onMouseEnter={() => onFocus?.(data.objects || [])} onMouseLeave={() => onFocus?.([])}>
-        <span className="line-number" aria-hidden="true">{i + 1}</span><code>{data.text || ' '}</code>{'\n'}
+        <span className="line-number" aria-hidden="true">{i + 1}</span><code>{data.text || ' '}</code>
+        {multipleCommands && data.text.trim() && !data.text.trimStart().startsWith('#') && <button type="button"
+          className="code-copy command-line-copy" aria-label={`Copy command ${i + 1} from ${title}`}
+          onClick={() => void copyText(data.text)}><Copy size={14} aria-hidden="true" /> Copy</button>}{'\n'}
       </span>;
     }) : <code className="p-4 block">No commands available. Resolve the input errors above.</code>}</pre>
   </div>;

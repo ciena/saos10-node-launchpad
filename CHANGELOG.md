@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-11-24
+
+### Added
+
+- Add custom Y.1564 Ethernet mixes with configurable frame sizes and explanations of predefined profiles.
+
+### Changed
+
+- Allow one configurable frame size for the SAT Outage/Continuous test.
+- Add individual command copy controls and a Copy All action to multi-command SAT Run & verify sections.
+- Remove the header HTML download and GitHub buttons and the cheatsheet GitHub tip submission button.
+
 ## [1.0.4] - 2026-11-19
 
 ### Added
